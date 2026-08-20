@@ -22,7 +22,12 @@ jobs:
 
     - name: Build macOS App
       run: |
-        pyinstaller --windowed --onefile --name "PhotoTemplateStudio" main.py
+        pyinstaller --windowed --onefile \
+          --collect-all basicsr \
+          --collect-all realesrgan \
+          --collect-all customtkinter \
+          --add-data "templates.json:." \
+          --name "PhotoTemplateStudio" main.py
 
     - name: Upload Executable Artifact
       uses: actions/upload-artifact@v4
