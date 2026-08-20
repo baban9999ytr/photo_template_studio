@@ -1,0 +1,31 @@
+name: Build macOS App
+
+on: [push]
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python install.py
+        pip install pyinstaller
+
+    - name: Build macOS App
+      run: |
+        pyinstaller --windowed --onefile --name "PhotoTemplateStudio" app/main.py
+
+    - name: Upload Executable Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: PhotoTemplateStudio-macOS
+        path: dist/PhotoTemplateStudio.app

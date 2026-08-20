@@ -1,0 +1,169 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing Git tag to build and release, for example v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Select release tag
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          TAG="${TAG#refs/tags/}"
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid tag: $TAG"
+            echo "Expected format such as v1.0.0"
+            exit 1
+          fi
+
+          echo "Release tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Executable (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --add-data "app;app/" `
+            main.py `
+            --name PhotoTemplateStudioPro
+
+      - name: Build Executable (macOS/Linux)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --onedir --windowed \
+            --add-data "app:app/" \
+            main.py \
+            --name PhotoTemplateStudioPro
+
+      - name: Create Release Environment File
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cat > release.env << EOF
+          APP_ENV=production
+          APP_VERSION=${{ steps.release.outputs.version }}
+          BUILD_NUMBER=${GITHUB_RUN_NUMBER}
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          PLATFORM=Release
+          EOF
+
+      - name: Prepare Release Documentation
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p release-files
+
+          cp requirements.txt release-files/requirements.txt
+          cp README.md release-files/README.md
+          cp LICENSE release-files/LICENSE
+          cp PRIVACY.md release-files/PRIVACY.md
+          cp release.env release-files/.env
+
+      - name: Archive Release (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path dist/PhotoTemplateStudioPro `
+            -DestinationPath PhotoTemplateStudioPro-Windows.zip
+
+      - name: Archive Release (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          tar -czvf "PhotoTemplateStudioPro-${{ runner.os }}.tar.gz" \
+            -C dist PhotoTemplateStudioPro
+
+      - name: Archive Release Documentation
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path release-files/* `
+            -DestinationPath PhotoTemplateStudioPro-Release-Files.zip
+
+      - name: Upload Windows Release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: PhotoTemplateStudioPro ${{ steps.release.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            PhotoTemplateStudioPro-Windows.zip
+            PhotoTemplateStudioPro-Release-Files.zip
+
+      - name: Upload Linux Release
+        if: matrix.os == 'ubuntu-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: PhotoTemplateStudioPro ${{ steps.release.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            PhotoTemplateStudioPro-Linux.tar.gz
+
+      - name: Upload macOS Release
+        if: matrix.os == 'macos-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: PhotoTemplateStudioPro ${{ steps.release.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            PhotoTemplateStudioPro-macOS.tar.gz
