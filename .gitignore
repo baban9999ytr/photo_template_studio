@@ -177,3 +177,6 @@ cython_debug/
 # Media directories
 img/
 photos/
+
+templates.json
+templates.json
