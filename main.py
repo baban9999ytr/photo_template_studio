@@ -1,6 +1,5 @@
 import sys
 
-
 def main():
     if sys.platform == "win32":
         try:
@@ -10,22 +9,25 @@ def main():
             pass
 
     try:
-        import customtkinter as ctk
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import Qt
     except ImportError:
         print(
-            "ERROR: customtkinter is required.\n"
-            "Install it with:  pip install customtkinter"
+            "ERROR: PySide6 is required.\n"
+            "Install it with:  pip install PySide6"
         )
         sys.exit(1)
-
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
-
+        
+    app = QApplication(sys.argv)
+    
+    from app import theme
+    app.setStyleSheet(theme.get_theme(dark=True))
+    
     from app.application import PhotoTemplateStudioPro
 
-    app = PhotoTemplateStudioPro()
-    app.mainloop()
-
+    window = PhotoTemplateStudioPro()
+    window.run()
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()

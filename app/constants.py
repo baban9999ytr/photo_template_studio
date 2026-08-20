@@ -258,6 +258,86 @@ I18N = {
             "Ham metni al ve Instagram veya Reels için coşkulu, enerjik ve büyüleyici bir Türkçe paragrafa dönüştür. "
             "Heyecan verici bir dil, bol emojiler ve güçlü kancalar (hooks) kullan!"
         ),
+    },
+    "fr": {
+        "tab_photo": "Studio Photo",
+        "tab_text": "Studio Texte",
+        "tab_vector": "Document / Vecteur",
+        "app_subtitle": "Moteur de Modèles Photo v2.0",
+        "lbl_template": "MODÈLE",
+        "btn_add_template": "＋  Ajouter un Modèle",
+        "lbl_framing_mode": "MODE DE CADRAGE",
+        "mode_pan_zoom": "Déplacer et Zoomer",
+        "mode_auto_fit": "Ajustement Auto",
+        "lbl_photo": "PHOTO",
+        "btn_load_photo": "📷   Charger une Photo",
+        "lbl_no_photo": "Aucune photo chargée",
+        "lbl_tools": "OUTILS",
+        "btn_move": "✥  Déplacer",
+        "btn_draw": "✏  Dessiner",
+        "btn_text": "T  Texte",
+        "lbl_brush": "Pinceau",
+        "txt_placeholder": "Saisissez le texte d'annotation…",
+        "lbl_font_size": "Taille de police",
+        "btn_clear_annotations": "Effacer les Annotations",
+        "lbl_developed_by": f"Développé par {AUTHOR_NAME}",
+        "btn_github": "Voir sur GitHub",
+        "switch_dark_mode": "Mode Sombre",
+        "lbl_adjustments": "RÉGLAGES",
+        "lbl_brightness": "Luminosité",
+        "lbl_contrast": "Contraste",
+        "lbl_sharpness": "Netteté",
+        "lbl_zoom_step": "Vitesse de Zoom",
+        "btn_reset_all": "↺  Tout Réinitialiser",
+        "lbl_ai_upscale": "IA MISE À L'ÉCHELLE",
+        "switch_enable": "Activer",
+        "msg_esrgan_ready": "✓  Real-ESRGAN prêt",
+        "msg_torch_fallback": "△  Torch bicubique (pas d'ESRGAN)",
+        "msg_cpu_fallback": "○  CPU / Pillow secours",
+        "lbl_export": "EXPORTER",
+        "btn_original_size": "Taille Originale",
+        "btn_save_image": "Enregistrer l'Image",
+        "btn_batch_process": "Traitement par Lot",
+        "lbl_model_provider": "Fournisseur :",
+        "lbl_model": "Modèle :",
+        "btn_edit_env": "⚙ Éditer .env",
+        "lbl_tone": "Ton :",
+        "lbl_length": "Longueur :",
+        "lbl_custom_prompt": "Instruction Personnalisée (Optionnel) :",
+        "lbl_rough_input": "Texte Brut",
+        "lbl_polished_output": "Texte Poli",
+        "btn_polish_text": "Polir le Texte",
+        "btn_copy_output": "Copier la Sortie",
+        "msg_select_template": "Sélectionnez un modèle pour commencer",
+        "msg_error": "Erreur",
+        "msg_success": "Succès",
+        "msg_warning": "Avertissement",
+        "msg_enter_text": "Veuillez entrer du texte à polir.",
+        "msg_api_key_required": "Une clé API est requise. Cliquez sur 'Éditer .env' pour l'ajouter.",
+        "msg_generating": "Génération en cours...",
+        "msg_done": "Terminé !",
+        "msg_copied": "Copié dans le presse-papiers !",
+        "msg_batch_starting": "Début du traitement par lot…",
+        "msg_batch_processing": "Traitement {current} / {total}…",
+        "msg_batch_complete": "{count} image(s) traitée(s) avec succès !",
+        "tone_prompt_formal": (
+            "Vous êtes un gestionnaire expert de réseaux sociaux pour une marque d'entreprise. "
+            "Votre tâche est de prendre un texte brut et informel et de le réécrire en un paragraphe "
+            "professionnel et formel en français. Il doit être impeccable, grammaticalement parfait "
+            "et optimisé pour les publications Instagram ou les descriptions de Reels."
+        ),
+        "tone_prompt_casual": (
+            "Vous êtes un gestionnaire de réseaux sociaux sympathique. "
+            "Prenez le texte brut et réécrivez-le en un paragraphe décontracté, engageant "
+            "et amical en français, parfait pour Instagram ou les Reels. "
+            "Utilisez des emojis avec goût et gardez le texte facile à lire."
+        ),
+        "tone_prompt_energetic": (
+            "Vous êtes un influenceur de réseaux sociaux plein d'énergie. "
+            "Prenez le texte brut et réécrivez-le en un paragraphe enthousiaste, "
+            "énergique et captivant en français pour Instagram ou les Reels. "
+            "Utilisez un langage excitant, des emojis et des accroches puissantes !"
+        ),
     }
 }
 

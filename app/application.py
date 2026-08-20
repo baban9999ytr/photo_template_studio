@@ -1,1250 +1,1084 @@
 import os
-import threading
-import subprocess
-import customtkinter as ctk
-from tkinter import filedialog, messagebox, colorchooser, simpledialog
-from PIL import Image
+import sys
+import io
 import webbrowser
-import fitz
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QLabel, QPushButton, QComboBox, QSlider, QLineEdit,
+    QScrollArea, QFrame, QCheckBox, QTextEdit, QFileDialog,
+    QButtonGroup, QSpinBox, QSizePolicy, QMessageBox, QColorDialog,
+    QSpacerItem,
+)
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QFont
+from PIL import Image
+
+from app.constants import (
+    APP_WINDOW_TITLE, APP_MIN_SIZE,
+    SIDEBAR_LEFT_WIDTH, SIDEBAR_RIGHT_WIDTH,
+    GITHUB_REPO_URL, INSTAGRAM_PRESETS,
+    SUPPORTED_IMAGE_EXTENSIONS,
+    BRUSH_SIZE_MIN, BRUSH_SIZE_MAX, BRUSH_SIZE_DEFAULT,
+    FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_DEFAULT,
+    TEXT_TONES, TEXT_LENGTHS,
+    get_app_base_dir, get_env_file_path,
+)
+from app.annotation_engine import AnnotationEngine
+from app.canvas_engine import CanvasEngine
+from app.image_processor import ImageProcessor
+from app.template_manager import TemplateManager
+from app import i18n
+from app.i18n import tr
+from app import theme
+
+# Register HEIF opener if available
 try:
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
+    import pillow_heif
+    pillow_heif.register_heif_opener()
 except ImportError:
     pass
 
-from app.constants import (
-    APP_WINDOW_TITLE,
-    APP_GEOMETRY,
-    APP_MIN_SIZE,
-    INSTAGRAM_PRESETS,
-    IMAGE_FILETYPES,
-    TEMPLATE_FILETYPES,
-    EXPORT_FILETYPES,
-    ACCENT_COLOR,
-    ACCENT_HOVER,
-    SIDEBAR_LEFT_WIDTH,
-    SIDEBAR_RIGHT_WIDTH,
-    SLIDER_MIN,
-    SLIDER_MAX,
-    SLIDER_DEFAULT,
-    BRUSH_SIZE_MIN,
-    BRUSH_SIZE_MAX,
-    BRUSH_SIZE_DEFAULT,
-    FONT_SIZE_MIN,
-    FONT_SIZE_MAX,
-    FONT_SIZE_DEFAULT,
-    ZOOM_STEP_MIN,
-    ZOOM_STEP_MAX,
-    ZOOM_STEP_DEFAULT,
-    ADJUSTMENT_DEBOUNCE_MS,
-    SUCCESS_COLOR,
-    WARNING_COLOR,
-    get_app_base_dir,
-    get_env_file_path,
-    get_platform,
-    TEXT_TONES,
-    TEXT_LENGTHS,
-    I18N,
-    GITHUB_REPO_URL
-)
-from app.gpu_engine import GPUEngine
-from app.template_manager import TemplateManager
-from app.image_processor import ImageProcessor
-from app.annotation_engine import AnnotationEngine
-from app.canvas_engine import CanvasEngine
-from app.export_pipeline import ExportPipeline
-from app.text_engine import TextEngine
+
+# ──────────────────────────────────────────────────────
+# Background worker for AI text generation
+# ──────────────────────────────────────────────────────
+
+class _TextWorker(QThread):
+    """Runs text generation in a background thread to keep the UI responsive."""
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, model_type, model_name, lang, tone, text, length, custom):
+        super().__init__()
+        self._args = (model_type, model_name, lang, tone, text, length, custom)
+
+    def run(self):
+        try:
+            from app.text_engine import TextEngine
+            result = TextEngine.generate_text(*self._args)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
-class PhotoTemplateStudioPro(ctk.CTk):
+# ──────────────────────────────────────────────────────
+# Main Application Window
+# ──────────────────────────────────────────────────────
+
+class PhotoTemplateStudioPro(QMainWindow):
+    """Main application window — orchestrates all UI panels and engines."""
 
     def __init__(self):
         super().__init__()
+        self._dark_mode = True
+        self._text_worker = None
+        self._init_engines()
+        self._build_ui()
+        self._wire_signals()
+        self._retranslate_ui()
+        i18n.on_language_changed(self._retranslate_ui)
 
-        self.title(APP_WINDOW_TITLE)
-        self.geometry(APP_GEOMETRY)
-        self.minsize(*APP_MIN_SIZE)
+    # ──────────────────────────────────────────────────
+    #  Engine Initialization
+    # ──────────────────────────────────────────────────
 
-        self._ensure_env_file()
-        self._lang = "tr"  # Default language
-
-        self._gpu = GPUEngine()
-        base = get_app_base_dir()
-        self._templates = TemplateManager(
-            os.path.join(base, "templates.json")
-        )
-        self._processor = ImageProcessor()
+    def _init_engines(self):
+        """Create backend engines — tolerant of missing optional deps."""
         self._annotations = AnnotationEngine()
-        self._export = ExportPipeline(
-            self._gpu, self._processor, self._annotations
+        self._image_processor = ImageProcessor()
+        templates_path = os.path.join(get_app_base_dir(), "templates.json")
+        self._template_manager = TemplateManager(templates_path)
+
+        self._gpu_engine = None
+        try:
+            from app.gpu_engine import GpuEngine
+            self._gpu_engine = GpuEngine()
+        except Exception:
+            pass
+
+        from app.export_pipeline import ExportPipeline
+        self._export_pipeline = ExportPipeline(
+            self._gpu_engine, self._image_processor, self._annotations
         )
 
-        self._current_template_image = None
-        self._ai_upscale_enabled = False
-        self._ai_scale = 4
         self._brightness = 1.0
         self._contrast = 1.0
         self._sharpness = 1.0
-        self._current_color = ACCENT_COLOR
-        self._font_size = FONT_SIZE_DEFAULT
-        self._current_tool = "move"
-        self._proxy_update_job = None
-        
-        self._mode_var = ctk.StringVar(value="Pan & Zoom")
-        self._active_layer_var = ctk.StringVar(value="Photo")
 
-        self._build_ui()
-        self.after(100, self._load_initial_template)
-
-    def _ensure_env_file(self):
-        env_path = get_env_file_path()
-        if not os.path.exists(env_path):
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write("OPENAI_API_KEY=\nGEMINI_API_KEY=\n")
-
-    def _t(self, key):
-        return I18N[self._lang].get(key, key)
-
-    def _change_language(self, lang):
-        if self._lang == lang:
-            return
-        self._lang = lang
-        
-        # Save state before rebuild
-        master_img = self._processor.get_master()
-        template_name = self._template_var.get() if hasattr(self, "_template_var") else None
-        
-        for widget in self.winfo_children():
-            widget.destroy()
-            
-        self._build_ui()
-        
-        if template_name:
-            self._template_var.set(template_name)
-            self._on_template_change(template_name)
-        if master_img:
-            self._processor.set_master(master_img)
-            self._gpu.clear_vram()
-            self._refresh_canvas_photo()
+    # ──────────────────────────────────────────────────
+    #  UI Construction
+    # ──────────────────────────────────────────────────
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.setWindowTitle(APP_WINDOW_TITLE)
+        self.setMinimumSize(APP_MIN_SIZE[0], APP_MIN_SIZE[1])
+        self.resize(1420, 900)
 
-        self.tabview = ctk.CTkTabview(self, corner_radius=0)
-        self.tabview.grid(row=0, column=0, sticky="nsew")
+        central = QWidget()
+        central.setObjectName("central_widget")
+        self.setCentralWidget(central)
 
-        self.tab_photo = self.tabview.add(self._t("tab_photo"))
-        self.tab_text = self.tabview.add(self._t("tab_text"))
-        self.tab_vector = self.tabview.add(self._t("tab_vector"))
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.tab_photo.grid_columnconfigure(1, weight=1)
-        self.tab_photo.grid_rowconfigure(0, weight=1)
+        self._tab_widget = QTabWidget()
+        root.addWidget(self._tab_widget)
 
-        self._build_left_sidebar(self.tab_photo)
-        self._build_center(self.tab_photo)
-        self._build_right_sidebar(self.tab_photo)
+        self._photo_tab = QWidget()
+        self._text_tab = QWidget()
+        self._vector_tab = QWidget()
 
-        self._build_text_studio(self.tab_text)
-        self._build_vector_studio(self.tab_vector)
+        self._tab_widget.addTab(self._photo_tab, "")
+        self._tab_widget.addTab(self._text_tab, "")
+        self._tab_widget.addTab(self._vector_tab, "")
 
-    # ------------------------------------------------------------------ #
-    #  LEFT SIDEBAR                                                      #
-    # ------------------------------------------------------------------ #
+        self._build_photo_tab()
+        self._build_text_tab()
+        self._build_vector_tab()
 
-    def _build_left_sidebar(self, parent):
-        sidebar = ctk.CTkScrollableFrame(
-            parent,
-            width=SIDEBAR_LEFT_WIDTH,
-            corner_radius=0,
+    # ─── Photo Tab ──────────────────────────────────
+
+    def _build_photo_tab(self):
+        layout = QHBoxLayout(self._photo_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._build_left_sidebar(layout)
+        self._build_center_canvas(layout)
+        self._build_right_sidebar(layout)
+
+    # ─── Left Sidebar ──────────────────────────────
+
+    def _build_left_sidebar(self, parent_layout):
+        scroll = QScrollArea()
+        scroll.setFixedWidth(SIDEBAR_LEFT_WIDTH)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(6)
+
+        # ── App Header ──
+        self._lbl_title = QLabel("⬡ Studio Pro")
+        self._lbl_title.setProperty("class", "app-title")
+        lay.addWidget(self._lbl_title)
+
+        self._lbl_subtitle = QLabel()
+        self._lbl_subtitle.setProperty("class", "app-subtitle")
+        lay.addWidget(self._lbl_subtitle)
+        lay.addWidget(self._sep())
+
+        # ── Template ──
+        self._lbl_template = self._header("lbl_template")
+        lay.addWidget(self._lbl_template)
+
+        self._combo_template = QComboBox()
+        self._refresh_template_list()
+        lay.addWidget(self._combo_template)
+
+        self._btn_add_template = QPushButton()
+        lay.addWidget(self._btn_add_template)
+        lay.addWidget(self._sep())
+
+        # ── Framing Mode ──
+        self._lbl_framing = self._header("lbl_framing_mode")
+        lay.addWidget(self._lbl_framing)
+
+        self._combo_framing = QComboBox()
+        lay.addWidget(self._combo_framing)
+        lay.addWidget(self._sep())
+
+        # ── Photo ──
+        self._lbl_photo = self._header("lbl_photo")
+        lay.addWidget(self._lbl_photo)
+
+        self._btn_load_photo = QPushButton()
+        self._btn_load_photo.setProperty("class", "accent")
+        lay.addWidget(self._btn_load_photo)
+
+        self._lbl_photo_info = QLabel()
+        self._lbl_photo_info.setProperty("class", "info-label")
+        lay.addWidget(self._lbl_photo_info)
+        lay.addWidget(self._sep())
+
+        # ── Tools ──
+        self._lbl_tools = self._header("lbl_tools")
+        lay.addWidget(self._lbl_tools)
+
+        # Layer toggle
+        lr = QHBoxLayout()
+        lr.setSpacing(4)
+        self._lbl_layer = QLabel("Layer:")
+        lr.addWidget(self._lbl_layer)
+        self._combo_layer = QComboBox()
+        self._combo_layer.addItems(["Photo", "Template"])
+        lr.addWidget(self._combo_layer, 1)
+        lay.addLayout(lr)
+
+        # Tool buttons
+        tr_ = QHBoxLayout()
+        tr_.setSpacing(4)
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.setExclusive(True)
+
+        self._btn_move = QPushButton()
+        self._btn_move.setCheckable(True)
+        self._btn_move.setChecked(True)
+        self._btn_move.setProperty("class", "tool-btn")
+
+        self._btn_draw = QPushButton()
+        self._btn_draw.setCheckable(True)
+        self._btn_draw.setProperty("class", "tool-btn")
+
+        self._btn_text_tool = QPushButton()
+        self._btn_text_tool.setCheckable(True)
+        self._btn_text_tool.setProperty("class", "tool-btn")
+
+        for btn in (self._btn_move, self._btn_draw, self._btn_text_tool):
+            self._tool_group.addButton(btn)
+            tr_.addWidget(btn)
+        lay.addLayout(tr_)
+
+        # Brush size
+        br = QHBoxLayout()
+        self._lbl_brush = QLabel()
+        br.addWidget(self._lbl_brush)
+        self._slider_brush = QSlider(Qt.Horizontal)
+        self._slider_brush.setRange(BRUSH_SIZE_MIN, BRUSH_SIZE_MAX)
+        self._slider_brush.setValue(BRUSH_SIZE_DEFAULT)
+        br.addWidget(self._slider_brush, 1)
+        self._lbl_brush_val = QLabel(str(BRUSH_SIZE_DEFAULT))
+        self._lbl_brush_val.setProperty("class", "value-label")
+        br.addWidget(self._lbl_brush_val)
+        lay.addLayout(br)
+
+        # Draw colour picker
+        cr = QHBoxLayout()
+        cr.addWidget(QLabel("Color:"))
+        self._btn_color = QPushButton("  ")
+        self._btn_color.setFixedSize(32, 24)
+        self._btn_color.setStyleSheet(
+            "background-color: #e94560; border-radius: 4px; border: none;"
         )
-        sidebar.grid(row=0, column=0, sticky="nsew")
+        cr.addWidget(self._btn_color)
+        cr.addStretch()
+        lay.addLayout(cr)
 
-        top_header = ctk.CTkFrame(sidebar, fg_color="transparent")
-        top_header.pack(fill="x", padx=16, pady=(18, 2))
-        
-        ctk.CTkLabel(
-            top_header,
-            text="⬡  Studio Pro",
-            font=ctk.CTkFont(size=22, weight="bold"),
-        ).pack(side="left")
-        
-        lang_seg = ctk.CTkSegmentedButton(
-            top_header, values=["tr", "en"],
-            command=self._change_language,
-            width=60, height=24
-        )
-        lang_seg.set(self._lang)
-        lang_seg.pack(side="right")
+        # Text annotation input
+        self._txt_annotation = QLineEdit()
+        lay.addWidget(self._txt_annotation)
 
-        ctk.CTkLabel(
-            sidebar,
-            text=self._t("app_subtitle"),
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-        ).pack(anchor="w", padx=16, pady=(0, 18))
+        # Font size
+        fr = QHBoxLayout()
+        self._lbl_font_size = QLabel()
+        fr.addWidget(self._lbl_font_size)
+        self._slider_font = QSlider(Qt.Horizontal)
+        self._slider_font.setRange(FONT_SIZE_MIN, FONT_SIZE_MAX)
+        self._slider_font.setValue(30)
+        fr.addWidget(self._slider_font, 1)
+        self._lbl_font_val = QLabel("30")
+        self._lbl_font_val.setProperty("class", "value-label")
+        fr.addWidget(self._lbl_font_val)
+        lay.addLayout(fr)
 
-        self._section_label(sidebar, self._t("lbl_template"))
+        # Clear annotations
+        self._btn_clear = QPushButton()
+        lay.addWidget(self._btn_clear)
+        lay.addWidget(self._sep())
 
-        names = self._templates.get_names()
-        self._template_var = ctk.StringVar(value=names[0] if names else "")
-        self._template_combo = ctk.CTkComboBox(
-            sidebar,
-            values=names if names else [""],
-            variable=self._template_var,
-            command=self._on_template_change,
-            state="readonly",
-            height=32,
-        )
-        self._template_combo.pack(fill="x", padx=16, pady=(4, 6))
+        # ── Settings ──
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("🌐"))
+        self._combo_lang = QComboBox()
+        for code in i18n.available_languages():
+            self._combo_lang.addItem(i18n.get_display_name(code), code)
+        lang_row.addWidget(self._combo_lang, 1)
+        lay.addLayout(lang_row)
 
-        ctk.CTkButton(
-            sidebar,
-            text=self._t("btn_add_template"),
-            height=30,
-            fg_color="transparent",
-            border_width=1,
-            border_color=ACCENT_COLOR,
-            text_color=ACCENT_COLOR,
-            hover_color=("#3b3b5c", "#2a2a4c"),
-            command=self._on_add_template,
-        ).pack(fill="x", padx=16, pady=(0, 12))
+        self._chk_dark = QCheckBox()
+        self._chk_dark.setChecked(True)
+        lay.addWidget(self._chk_dark)
 
-        self._section_label(sidebar, self._t("lbl_framing_mode"))
+        # Spacer pushes credits to the bottom
+        lay.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        val_pan = self._t("mode_pan_zoom")
-        val_fit = self._t("mode_auto_fit")
-        if not self._mode_var.get() in [val_pan, val_fit]:
-            self._mode_var.set(val_pan)
+        # ── Credits ──
+        lay.addWidget(self._sep())
+        self._lbl_credits = QLabel()
+        self._lbl_credits.setProperty("class", "info-label")
+        lay.addWidget(self._lbl_credits)
 
-        self._mode_seg = ctk.CTkSegmentedButton(
-            sidebar,
-            values=[val_pan, val_fit],
-            variable=self._mode_var,
-            command=self._on_mode_change,
-        )
-        self._mode_seg.pack(fill="x", padx=16, pady=(4, 12))
+        self._btn_github = QPushButton()
+        self._btn_github.setProperty("class", "link-btn")
+        lay.addWidget(self._btn_github)
 
-        self._section_label(sidebar, "Active Layer")
-        self._layer_seg = ctk.CTkSegmentedButton(
-            sidebar,
-            values=["Photo", "Template"],
-            variable=self._active_layer_var,
-            command=self._on_active_layer_change,
-        )
-        self._layer_seg.pack(fill="x", padx=16, pady=(4, 12))
+        scroll.setWidget(container)
+        parent_layout.addWidget(scroll)
 
-        self._section_label(sidebar, self._t("lbl_photo"))
+    # ─── Center Canvas ─────────────────────────────
 
-        ctk.CTkButton(
-            sidebar,
-            text=self._t("btn_load_photo"),
-            height=38,
-            fg_color=ACCENT_COLOR,
-            hover_color=ACCENT_HOVER,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            command=self._on_load_photo,
-        ).pack(fill="x", padx=16, pady=(4, 4))
+    def _build_center_canvas(self, parent_layout):
+        wrapper = QWidget()
+        wl = QVBoxLayout(wrapper)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(0)
 
-        self._file_label = ctk.CTkLabel(
-            sidebar,
-            text=self._t("lbl_no_photo"),
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-            wraplength=SIDEBAR_LEFT_WIDTH - 40,
-        )
-        self._file_label.pack(anchor="w", padx=16, pady=(0, 12))
-
-        self._section_label(sidebar, self._t("lbl_tools"))
-
-        tools_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        tools_frame.pack(fill="x", padx=16, pady=(4, 6))
-        tools_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-        self._move_btn = ctk.CTkButton(
-            tools_frame,
-            text=self._t("btn_move"),
-            width=70,
-            height=34,
-            font=ctk.CTkFont(size=12),
-            fg_color=ACCENT_COLOR,
-            command=lambda: self._on_tool_change("move"),
-        )
-        self._move_btn.grid(row=0, column=0, padx=2, sticky="ew")
-
-        self._draw_btn = ctk.CTkButton(
-            tools_frame,
-            text=self._t("btn_draw"),
-            width=70,
-            height=34,
-            font=ctk.CTkFont(size=12),
-            fg_color="transparent",
-            border_width=1,
-            border_color="gray",
-            command=lambda: self._on_tool_change("draw"),
-        )
-        self._draw_btn.grid(row=0, column=1, padx=2, sticky="ew")
-
-        self._text_btn = ctk.CTkButton(
-            tools_frame,
-            text=self._t("btn_text"),
-            width=70,
-            height=34,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="transparent",
-            border_width=1,
-            border_color="gray",
-            command=lambda: self._on_tool_change("text"),
-        )
-        self._text_btn.grid(row=0, column=2, padx=2, sticky="ew")
-
-        color_row = ctk.CTkFrame(sidebar, fg_color="transparent")
-        color_row.pack(fill="x", padx=16, pady=(4, 4))
-
-        self._color_preview = ctk.CTkButton(
-            color_row,
-            text="",
-            width=34,
-            height=34,
-            fg_color=self._current_color,
-            hover_color=self._current_color,
-            corner_radius=17,
-            border_width=2,
-            border_color="#555",
-            command=self._on_color_pick,
-        )
-        self._color_preview.pack(side="left", padx=(0, 10))
-
-        ctk.CTkLabel(
-            color_row,
-            text=self._t("lbl_brush"),
-            font=ctk.CTkFont(size=11),
-        ).pack(side="left", padx=(0, 4))
-
-        self._brush_slider = ctk.CTkSlider(
-            color_row,
-            from_=BRUSH_SIZE_MIN,
-            to=BRUSH_SIZE_MAX,
-            number_of_steps=BRUSH_SIZE_MAX - BRUSH_SIZE_MIN,
-            width=110,
-            command=self._on_brush_change,
-        )
-        self._brush_slider.set(self._brush_width if hasattr(self, "_brush_width") else BRUSH_SIZE_DEFAULT)
-        self._brush_slider.pack(side="left", padx=4, fill="x", expand=True)
-
-        text_input_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        text_input_frame.pack(fill="x", padx=16, pady=(4, 4))
-        
-        self._text_entry = ctk.CTkEntry(
-            text_input_frame,
-            placeholder_text=self._t("txt_placeholder"),
-            height=32,
-        )
-        self._text_entry.pack(side="left", fill="x", expand=True)
-        self._text_entry.bind("<Return>", lambda e: self._on_add_text_center())
-
-        ctk.CTkButton(
-            text_input_frame,
-            text="+",
-            width=32,
-            height=32,
-            fg_color=ACCENT_COLOR,
-            hover_color=ACCENT_HOVER,
-            command=self._on_add_text_center,
-        ).pack(side="right", padx=(4, 0))
-
-        font_row = ctk.CTkFrame(sidebar, fg_color="transparent")
-        font_row.pack(fill="x", padx=16, pady=(0, 6))
-
-        ctk.CTkLabel(
-            font_row,
-            text=self._t("lbl_font_size"),
-            font=ctk.CTkFont(size=11),
-        ).pack(side="left", padx=(0, 4))
-
-        self._font_val_label = ctk.CTkLabel(
-            font_row,
-            text=str(self._font_size),
-            font=ctk.CTkFont(size=10),
-            width=30,
-        )
-        self._font_val_label.pack(side="right")
-
-        self._font_slider = ctk.CTkSlider(
-            font_row,
-            from_=FONT_SIZE_MIN,
-            to=FONT_SIZE_MAX,
-            width=120,
-            command=self._on_font_size_change,
-        )
-        self._font_slider.set(self._font_size)
-        self._font_slider.pack(side="right", padx=4, fill="x", expand=True)
-
-        ctk.CTkButton(
-            sidebar,
-            text=self._t("btn_clear_annotations"),
-            height=28,
-            fg_color="transparent",
-            border_width=1,
-            border_color="gray",
-            text_color="gray",
-            hover_color=("#3b3b5c", "#ddd"),
-            command=self._on_clear_annotations,
-        ).pack(fill="x", padx=16, pady=(4, 16))
-
-        # Bottom Footer for Branding & Theme Switch
-        footer_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        footer_frame.pack(side="bottom", fill="x", padx=16, pady=(0, 16))
-
-        lbl_author = ctk.CTkLabel(
-            footer_frame,
-            text=self._t("lbl_developed_by"),
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-        )
-        lbl_author.pack(anchor="w")
-
-        btn_github = ctk.CTkButton(
-            footer_frame,
-            text=self._t("btn_github"),
-            height=24,
-            fg_color="transparent",
-            border_width=1,
-            text_color=("gray10", "gray90"),
-            command=lambda: webbrowser.open(GITHUB_REPO_URL),
-        )
-        btn_github.pack(fill="x", pady=(5, 10))
-
-        theme_frame = ctk.CTkFrame(footer_frame, fg_color="transparent")
-        theme_frame.pack(fill="x")
-
-        ctk.CTkLabel(
-            theme_frame,
-            text="🌙",
-            font=ctk.CTkFont(size=14),
-        ).pack(side="left")
-
-        self._theme_switch = ctk.CTkSwitch(
-            theme_frame,
-            text=self._t("switch_dark_mode"),
-            onvalue="dark",
-            offvalue="light",
-            command=self._on_theme_toggle,
-        )
-        if ctk.get_appearance_mode().lower() == "dark":
-            self._theme_switch.select()
-        else:
-            self._theme_switch.deselect()
-        self._theme_switch.pack(side="left", padx=10)
-
-    # ------------------------------------------------------------------ #
-    #  CENTER CANVAS                                                     #
-    # ------------------------------------------------------------------ #
-
-    def _build_center(self, parent):
-        center = ctk.CTkFrame(parent, corner_radius=0, fg_color="transparent")
-        center.grid(row=0, column=1, sticky="nsew")
-        center.grid_rowconfigure(0, weight=1)
-        center.grid_columnconfigure(0, weight=1)
+        frame = QFrame()
+        frame.setObjectName("center_frame")
+        fl = QVBoxLayout(frame)
+        fl.setContentsMargins(4, 4, 4, 4)
 
         self._canvas_engine = CanvasEngine(
-            center, self._annotations,
-            on_canvas_click=self._on_canvas_click,
+            fl, self._annotations, on_canvas_click=self._on_canvas_click
         )
 
-    # ------------------------------------------------------------------ #
-    #  RIGHT SIDEBAR                                                     #
-    # ------------------------------------------------------------------ #
+        wl.addWidget(frame, 1)
 
-    def _build_right_sidebar(self, parent):
-        sidebar = ctk.CTkScrollableFrame(
-            parent, width=SIDEBAR_RIGHT_WIDTH, corner_radius=0,
-        )
-        sidebar.grid(row=0, column=2, sticky="nsew")
+        self._lbl_status = QLabel("Ready")
+        self._lbl_status.setProperty("class", "status-bar")
+        self._lbl_status.setFixedHeight(28)
+        wl.addWidget(self._lbl_status)
 
-        self._section_label(sidebar, self._t("lbl_adjustments"))
+        parent_layout.addWidget(wrapper, 1)
 
-        self._brightness_slider = self._build_adj_slider(
-            sidebar, self._t("lbl_brightness"), self._on_brightness, self._brightness
-        )
-        self._contrast_slider = self._build_adj_slider(
-            sidebar, self._t("lbl_contrast"), self._on_contrast, self._contrast
-        )
-        self._sharpness_slider = self._build_adj_slider(
-            sidebar, self._t("lbl_sharpness"), self._on_sharpness, self._sharpness
-        )
+    # ─── Right Sidebar ─────────────────────────────
 
-        self._zoom_step_slider = self._build_adj_slider(
-            sidebar, self._t("lbl_zoom_step"), self._on_zoom_step, ZOOM_STEP_DEFAULT
-        )
-        self._zoom_step_slider.configure(from_=ZOOM_STEP_MIN, to=ZOOM_STEP_MAX)
+    def _build_right_sidebar(self, parent_layout):
+        scroll = QScrollArea()
+        scroll.setFixedWidth(SIDEBAR_RIGHT_WIDTH)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        ctk.CTkButton(
-            sidebar, text=self._t("btn_reset_all"), height=26,
-            fg_color="transparent", border_width=1, border_color="gray",
-            text_color="gray", font=ctk.CTkFont(size=11),
-            command=self._on_reset_adjustments,
-        ).pack(fill="x", padx=16, pady=(6, 14))
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(6)
 
-        self._section_label(sidebar, self._t("lbl_ai_upscale"))
+        # ── Adjustments ──
+        self._lbl_adj = self._header("lbl_adjustments")
+        lay.addWidget(self._lbl_adj)
 
-        ai_row = ctk.CTkFrame(sidebar, fg_color="transparent")
-        ai_row.pack(fill="x", padx=16, pady=(4, 4))
+        # Brightness
+        self._lbl_brightness, self._slider_brightness, self._lbl_br_val = \
+            self._add_slider_row(lay, "lbl_brightness", 0, 200, 100)
 
-        can_upscale = self._gpu.has_esrgan() or self._gpu.has_torch()
-        self._ai_switch = ctk.CTkSwitch(
-            ai_row, text=self._t("switch_enable"),
-            command=self._on_ai_toggle,
-            state="normal",
-        )
-        if self._ai_upscale_enabled:
-            self._ai_switch.select()
-        self._ai_switch.pack(side="left")
+        # Contrast
+        self._lbl_contrast, self._slider_contrast, self._lbl_co_val = \
+            self._add_slider_row(lay, "lbl_contrast", 0, 200, 100)
 
-        self._scale_menu = ctk.CTkOptionMenu(
-            ai_row, values=["2x", "4x"], width=68,
-            command=self._on_scale_change,
-        )
-        self._scale_menu.set(f"{self._ai_scale}x")
-        self._scale_menu.pack(side="right")
+        # Sharpness
+        self._lbl_sharpness, self._slider_sharpness, self._lbl_sh_val = \
+            self._add_slider_row(lay, "lbl_sharpness", 0, 200, 100)
 
-        gpu_color = SUCCESS_COLOR if self._gpu.has_gpu() else "gray"
-        ctk.CTkLabel(
-            sidebar, text=f"⚡ {self._gpu.device_name}",
-            font=ctk.CTkFont(size=11), text_color=gpu_color,
-        ).pack(anchor="w", padx=16, pady=(6, 2))
+        # Zoom Speed
+        self._lbl_zoom, self._slider_zoom, self._lbl_zm_val = \
+            self._add_slider_row(lay, "lbl_zoom_step", 10, 500, 100)
 
-        if self._gpu.has_esrgan():
-            status_text = self._t("msg_esrgan_ready")
-            status_color = SUCCESS_COLOR
-        elif self._gpu.has_torch():
-            status_text = self._t("msg_torch_fallback")
-            status_color = WARNING_COLOR
-        else:
-            status_text = self._t("msg_cpu_fallback")
-            status_color = "gray"
+        self._btn_reset = QPushButton()
+        lay.addWidget(self._btn_reset)
+        lay.addWidget(self._sep())
 
-        ctk.CTkLabel(
-            sidebar, text=status_text,
-            font=ctk.CTkFont(size=10), text_color=status_color,
-        ).pack(anchor="w", padx=16, pady=(0, 14))
+        # ── AI Upscale ──
+        self._lbl_ai = self._header("lbl_ai_upscale")
+        lay.addWidget(self._lbl_ai)
 
-        self._section_label(sidebar, self._t("lbl_export"))
+        self._chk_ai = QCheckBox()
+        lay.addWidget(self._chk_ai)
 
-        presets_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        presets_frame.pack(fill="x", padx=16, pady=(4, 4))
-        presets_frame.grid_columnconfigure((0, 1), weight=1)
+        self._lbl_ai_status = QLabel()
+        self._lbl_ai_status.setProperty("class", "info-label")
+        lay.addWidget(self._lbl_ai_status)
+        self._update_ai_status_label()
+        lay.addWidget(self._sep())
 
-        preset_items = list(INSTAGRAM_PRESETS.items())
-        for i, (name, (pw, ph)) in enumerate(preset_items):
-            ctk.CTkButton(
-                presets_frame, text=name, height=30,
-                font=ctk.CTkFont(size=10),
-                fg_color="transparent", border_width=1, border_color="gray",
-                command=lambda w=pw, h=ph: self._on_preset(w, h),
-            ).grid(row=i // 2, column=i % 2, padx=2, pady=2, sticky="ew")
+        # ── Export ──
+        self._lbl_export = self._header("lbl_export")
+        lay.addWidget(self._lbl_export)
 
-        idx = len(preset_items)
-        ctk.CTkButton(
-            presets_frame, text=self._t("btn_original_size"), height=30,
-            font=ctk.CTkFont(size=10),
-            fg_color="transparent", border_width=1, border_color="gray",
-            command=self._on_preset_original,
-        ).grid(row=idx // 2, column=idx % 2, padx=2, pady=2, sticky="ew")
+        self._combo_preset = QComboBox()
+        presets = ["Original Size"] + [
+            f"{k} ({v[0]}×{v[1]})" for k, v in INSTAGRAM_PRESETS.items()
+        ] + ["Custom"]
+        self._combo_preset.addItems(presets)
+        lay.addWidget(self._combo_preset)
 
-        dim_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        dim_frame.pack(fill="x", padx=16, pady=(8, 4))
+        # Custom W×H (hidden by default)
+        self._wgt_custom = QWidget()
+        cl = QHBoxLayout(self._wgt_custom)
+        cl.setContentsMargins(0, 4, 0, 0)
+        self._spin_w = QSpinBox(); self._spin_w.setRange(1, 10000); self._spin_w.setValue(1080)
+        self._spin_h = QSpinBox(); self._spin_h.setRange(1, 10000); self._spin_h.setValue(1080)
+        cl.addWidget(QLabel("W:")); cl.addWidget(self._spin_w)
+        cl.addWidget(QLabel("H:")); cl.addWidget(self._spin_h)
+        self._wgt_custom.setVisible(False)
+        lay.addWidget(self._wgt_custom)
 
-        ctk.CTkLabel(
-            dim_frame, text="W", font=ctk.CTkFont(size=11),
-        ).pack(side="left")
+        self._btn_save = QPushButton()
+        self._btn_save.setProperty("class", "accent")
+        lay.addWidget(self._btn_save)
 
-        self._width_var = ctk.StringVar(value="1080")
-        self._width_var.trace_add("write", self._on_export_dim_change)
-        ctk.CTkEntry(
-            dim_frame, textvariable=self._width_var,
-            width=62, height=30,
-        ).pack(side="left", padx=(4, 12))
+        self._btn_batch = QPushButton()
+        lay.addWidget(self._btn_batch)
 
-        ctk.CTkLabel(
-            dim_frame, text="H", font=ctk.CTkFont(size=11),
-        ).pack(side="left")
+        lay.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        self._height_var = ctk.StringVar(value="1080")
-        self._height_var.trace_add("write", self._on_export_dim_change)
-        ctk.CTkEntry(
-            dim_frame, textvariable=self._height_var,
-            width=62, height=30,
-        ).pack(side="left", padx=(4, 0))
+        scroll.setWidget(container)
+        parent_layout.addWidget(scroll)
 
-        ctk.CTkLabel(
-            dim_frame, text="px", font=ctk.CTkFont(size=10),
-            text_color="gray",
-        ).pack(side="left", padx=(4, 0))
+    # ─── Text Tab ──────────────────────────────────
 
-        ctk.CTkButton(
-            sidebar, text=self._t("btn_save_image"), height=42,
-            fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self._on_save,
-        ).pack(fill="x", padx=16, pady=(14, 6))
+    def _build_text_tab(self):
+        layout = QHBoxLayout(self._text_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        ctk.CTkButton(
-            sidebar, text=self._t("btn_batch_process"), height=36,
-            fg_color="transparent", border_width=1,
-            border_color=ACCENT_COLOR, text_color=ACCENT_COLOR,
-            font=ctk.CTkFont(size=12),
-            command=self._on_batch,
-        ).pack(fill="x", padx=16, pady=(0, 6))
+        # Settings sidebar
+        sc = QScrollArea()
+        sc.setFixedWidth(SIDEBAR_LEFT_WIDTH)
+        sc.setWidgetResizable(True)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        self._progress = ctk.CTkProgressBar(sidebar, height=8)
-        self._progress.set(0)
+        sw = QWidget()
+        sl = QVBoxLayout(sw)
+        sl.setContentsMargins(16, 16, 16, 16)
+        sl.setSpacing(8)
 
-        self._progress_label = ctk.CTkLabel(
-            sidebar, text="",
-            font=ctk.CTkFont(size=10), text_color="gray",
-        )
+        self._lbl_provider = QLabel()
+        sl.addWidget(self._lbl_provider)
+        self._combo_provider = QComboBox()
+        self._combo_provider.addItems(["Ollama", "Paid APIs"])
+        sl.addWidget(self._combo_provider)
 
-    # ------------------------------------------------------------------ #
-    #  VECTOR STUDIO                                                     #
-    # ------------------------------------------------------------------ #
+        self._lbl_model_txt = QLabel()
+        sl.addWidget(self._lbl_model_txt)
+        self._combo_model = QComboBox()
+        self._combo_model.addItem("Loading...")
+        sl.addWidget(self._combo_model)
 
-    def _build_vector_studio(self, parent):
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(0, weight=1)
-        
-        # Simple layout: top bar for loading, center canvas for rendering
-        top_bar = ctk.CTkFrame(parent, height=50)
-        top_bar.grid(row=0, column=0, sticky="ew")
-        
-        ctk.CTkButton(top_bar, text="Load PDF/SVG", command=self._on_load_vector).pack(side="left", padx=10, pady=10)
-        self._vector_label = ctk.CTkLabel(top_bar, text="No document loaded")
-        self._vector_label.pack(side="left", padx=10)
-        
-        center = ctk.CTkFrame(parent, fg_color="transparent")
-        center.grid(row=1, column=0, sticky="nsew")
-        
-        self._vector_annotations = AnnotationEngine()
-        self._vector_canvas = CanvasEngine(center, self._vector_annotations)
-        self._vector_canvas.set_mode("pan_zoom")
-        self._vector_canvas.set_tool("draw")
-    def _section_label(self, parent, text):
-        lbl = ctk.CTkLabel(
-            parent, text=text, font=ctk.CTkFont(size=12, weight="bold")
-            )
-        lbl.pack(anchor="w", padx=10, pady=(10, 2))
+        self._btn_env = QPushButton()
+        sl.addWidget(self._btn_env)
+        sl.addWidget(self._sep())
+
+        self._lbl_tone = QLabel()
+        sl.addWidget(self._lbl_tone)
+        self._combo_tone = QComboBox()
+        self._combo_tone.addItems(TEXT_TONES)
+        sl.addWidget(self._combo_tone)
+
+        self._lbl_length = QLabel()
+        sl.addWidget(self._lbl_length)
+        self._combo_length = QComboBox()
+        self._combo_length.addItems(TEXT_LENGTHS)
+        self._combo_length.setCurrentIndex(1)
+        sl.addWidget(self._combo_length)
+        sl.addWidget(self._sep())
+
+        self._lbl_custom = QLabel()
+        self._lbl_custom.setWordWrap(True)
+        sl.addWidget(self._lbl_custom)
+        self._txt_custom = QLineEdit()
+        sl.addWidget(self._txt_custom)
+
+        sl.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        sc.setWidget(sw)
+        layout.addWidget(sc)
+
+        # Content area
+        cw = QWidget()
+        cl = QVBoxLayout(cw)
+        cl.setContentsMargins(16, 16, 16, 16)
+        cl.setSpacing(8)
+
+        self._lbl_rough = QLabel()
+        cl.addWidget(self._lbl_rough)
+        self._txt_input = QTextEdit()
+        self._txt_input.setPlaceholderText("Enter your rough text here...")
+        cl.addWidget(self._txt_input, 1)
+
+        br = QHBoxLayout()
+        self._btn_polish = QPushButton()
+        self._btn_polish.setProperty("class", "accent")
+        br.addWidget(self._btn_polish)
+        br.addStretch()
+        cl.addLayout(br)
+
+        self._lbl_polished = QLabel()
+        cl.addWidget(self._lbl_polished)
+        self._txt_output = QTextEdit()
+        self._txt_output.setReadOnly(True)
+        cl.addWidget(self._txt_output, 1)
+
+        cr = QHBoxLayout()
+        self._btn_copy = QPushButton()
+        self._btn_copy.setProperty("class", "success")
+        cr.addWidget(self._btn_copy)
+        cr.addStretch()
+        cl.addLayout(cr)
+
+        layout.addWidget(cw, 1)
+
+    # ─── Vector Tab ────────────────────────────────
+
+    def _build_vector_tab(self):
+        layout = QVBoxLayout(self._vector_tab)
+        layout.setAlignment(Qt.AlignCenter)
+        lbl = QLabel("Document / Vector Studio\n\nComing soon…")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setProperty("class", "info-label")
+        lbl.setStyleSheet("font-size: 16px;")
+        layout.addWidget(lbl)
+
+    # ──────────────────────────────────────────────────
+    #  Widget Factory Helpers
+    # ──────────────────────────────────────────────────
+
+    def _header(self, key):
+        """Create a styled section-header QLabel."""
+        lbl = QLabel(tr(key))
+        lbl.setProperty("class", "section-header")
         return lbl
-    def _on_load_vector(self):
-        filepath = filedialog.askopenfilename(
-            filetypes=[("Vector/Document", "*.svg *.pdf")]
-            )
-        if not filepath:
-            return
 
-        self._vector_label.configure(text=os.path.basename(filepath))
+    def _sep(self):
+        """Create a thin horizontal separator line."""
+        f = QFrame()
+        f.setFrameShape(QFrame.HLine)
+        f.setProperty("class", "separator")
+        f.setFixedHeight(1)
+        return f
 
-        try:
-            ext = os.path.splitext(filepath)[1].lower()
-            if ext in [".pdf", ".svg"]:
-                doc = fitz.open(filepath)
-                page = doc[0]
-                pix = page.get_pixmap(dpi=150)
-                mode = "RGBA" if pix.alpha else "RGB"
-                img = Image.frombytes(
-                    mode, [pix.width, pix.height], pix.samples
-                    ).convert("RGBA")
-            else:
-                img = Image.open(filepath).convert("RGBA")
-            self._vector_canvas.set_photo(img, img.size, None)
-
-        except Exception as e:
-            messagebox.showerror(
-        "Format Error",
-        f"Unable to load file: {e}\n\nMake sure PyMuPDF is installed: pip"
-        " install PyMuPDF",
-    )
-    # ------------------------------------------------------------------ #
-    #  TEXT STUDIO                                                       #
-    # ------------------------------------------------------------------ #
-
-    def _build_text_studio(self, parent):
-        parent.grid_columnconfigure((0, 1), weight=1)
-        parent.grid_rowconfigure(1, weight=1)
-
-        top_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        top_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(20, 10))
-
-        ctk.CTkLabel(top_frame, text=self._t("lbl_model_provider")).pack(side="left", padx=(0, 10))
-        
-        self._text_provider_var = ctk.StringVar(value="Ollama")
-        self._text_provider_seg = ctk.CTkSegmentedButton(
-            top_frame, values=["Ollama", "Paid APIs"],
-            variable=self._text_provider_var,
-            command=self._on_text_provider_change
-        )
-        self._text_provider_seg.pack(side="left", padx=(0, 20))
-
-        ctk.CTkLabel(top_frame, text=self._t("lbl_model")).pack(side="left", padx=(0, 10))
-        
-        self._text_model_combo = ctk.CTkComboBox(top_frame, values=["Loading..."], width=180)
-        self._text_model_combo.pack(side="left", padx=(0, 20))
-
-        self._edit_env_btn = ctk.CTkButton(
-            top_frame, text=self._t("btn_edit_env"),
-            fg_color="transparent", border_width=1,
-            command=self._on_edit_env
-        )
-        
-        ctk.CTkLabel(top_frame, text=self._t("lbl_tone")).pack(side="left", padx=(20, 10))
-        
-        self._text_tone_combo = ctk.CTkComboBox(top_frame, values=TEXT_TONES, width=150)
-        self._text_tone_combo.set(TEXT_TONES[0])
-        self._text_tone_combo.pack(side="left")
-
-        ctk.CTkLabel(top_frame, text=self._t("lbl_length")).pack(side="left", padx=(20, 10))
-        
-        self._text_length_combo = ctk.CTkComboBox(top_frame, values=TEXT_LENGTHS, width=120)
-        self._text_length_combo.set(TEXT_LENGTHS[1])
-        self._text_length_combo.pack(side="left")
-
-        self._custom_prompt_entry = ctk.CTkEntry(top_frame, placeholder_text=self._t("lbl_custom_prompt"), width=200)
-        self._custom_prompt_entry.pack(side="left", padx=(20, 10))
-
-        input_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        input_frame.grid(row=1, column=0, sticky="nsew", padx=(20, 10), pady=(0, 20))
-        input_frame.grid_rowconfigure(1, weight=1)
-        input_frame.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(input_frame, text=self._t("lbl_rough_input"), font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(0, 5))
-        self._text_input = ctk.CTkTextbox(input_frame, wrap="word")
-        self._text_input.grid(row=1, column=0, sticky="nsew")
-
-        output_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        output_frame.grid(row=1, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
-        output_frame.grid_rowconfigure(1, weight=1)
-        output_frame.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(output_frame, text=self._t("lbl_polished_output"), font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(0, 5))
-        self._text_output = ctk.CTkTextbox(output_frame, wrap="word", state="disabled")
-        self._text_output.grid(row=1, column=0, sticky="nsew")
-
-        bottom_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        bottom_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 20))
-
-        self._generate_btn = ctk.CTkButton(
-            bottom_frame, text=self._t("btn_polish_text"),
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=ACCENT_COLOR, hover_color=ACCENT_HOVER,
-            command=self._on_generate_text
-        )
-        self._generate_btn.pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            bottom_frame, text=self._t("btn_copy_output"),
-            fg_color="transparent", border_width=1,
-            command=self._on_copy_text
-        ).pack(side="left")
-        
-        self._text_status_label = ctk.CTkLabel(bottom_frame, text="", text_color="gray")
-        self._text_status_label.pack(side="right")
-
-        threading.Thread(target=self._fetch_ollama_models, daemon=True).start()
-
-    def _fetch_ollama_models(self):
-        models = TextEngine.get_ollama_models()
-        self.after(0, lambda: self._update_model_dropdown("Ollama", models))
-
-    def _update_model_dropdown(self, provider, models):
-        if self._text_provider_var.get() == provider:
-            if models:
-                self._text_model_combo.configure(values=models)
-                self._text_model_combo.set(models[0])
-            else:
-                self._text_model_combo.configure(values=["No models found"])
-                self._text_model_combo.set("No models found")
-
-    def _on_text_provider_change(self, value):
-        if value == "Ollama":
-            self._edit_env_btn.pack_forget()
-            self._text_model_combo.set("Loading...")
-            threading.Thread(target=self._fetch_ollama_models, daemon=True).start()
-        else:
-            self._edit_env_btn.pack(side="left", padx=(20, 10), after=self._text_model_combo)
-            models = TextEngine.PAID_MODELS
-            self._text_model_combo.configure(values=models)
-            self._text_model_combo.set(models[0])
-
-    def _on_edit_env(self):
-        env_path = get_env_file_path()
-        try:
-            if get_platform() == "windows":
-                os.startfile(env_path)
-            elif get_platform() == "darwin":
-                subprocess.run(["open", env_path])
-            else:
-                subprocess.run(["xdg-open", env_path])
-        except Exception as e:
-            messagebox.showerror(self._t("msg_error"), str(e))
-
-    def _on_generate_text(self):
-        input_text = self._text_input.get("1.0", "end-1c").strip()
-        if not input_text:
-            messagebox.showwarning(self._t("msg_warning"), self._t("msg_enter_text"))
-            return
-
-        provider = self._text_provider_var.get()
-        model = self._text_model_combo.get()
-        tone = self._text_tone_combo.get()
-        length = self._text_length_combo.get()
-        custom_inject = self._custom_prompt_entry.get().strip()
-
-        if model == "No models found" or model == "Loading...":
-            messagebox.showwarning(self._t("msg_warning"), "Please select a valid model.")
-            return
-
-        self._generate_btn.configure(state="disabled", text=self._t("msg_generating"))
-        self._text_status_label.configure(text=self._t("msg_generating"))
-        self._text_output.configure(state="normal")
-        self._text_output.delete("1.0", "end")
-        self._text_output.configure(state="disabled")
-
-        def run():
-            try:
-                result = TextEngine.generate_text(provider, model, self._lang, tone, input_text, length, custom_inject)
-                self.after(0, lambda: self._on_generate_success(result))
-            except ValueError as ve:
-                if str(ve) == "API_KEY_MISSING":
-                    self.after(0, lambda: self._on_generate_error(self._t("msg_api_key_required")))
-                else:
-                    self.after(0, lambda err=str(ve): self._on_generate_error(err))
-            except Exception as e:
-                self.after(0, lambda err=str(e): self._on_generate_error(err))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _on_generate_success(self, text):
-        self._text_output.configure(state="normal")
-        self._text_output.insert("1.0", text)
-        self._text_output.configure(state="disabled")
-        self._generate_btn.configure(state="normal", text=self._t("btn_polish_text"))
-        self._text_status_label.configure(text=self._t("msg_done"), text_color=SUCCESS_COLOR)
-        
-    def _on_generate_error(self, err_msg):
-        self._generate_btn.configure(state="normal", text=self._t("btn_polish_text"))
-        self._text_status_label.configure(text=self._t("msg_error"), text_color=WARNING_COLOR)
-        messagebox.showerror(self._t("msg_error"), err_msg)
-
-    def _on_copy_text(self):
-        text = self._text_output.get("1.0", "end-1c").strip()
-        if text:
-            self.clipboard_clear()
-            self.clipboard_append(text)
-            self._text_status_label.configure(text=self._t("msg_copied"), text_color=SUCCESS_COLOR)
-
-    # ------------------------------------------------------------------ #
-    #  HELPERS                                                           #
-    # ------------------------------------------------------------------ #
+    def _add_slider_row(self, parent_layout, label_key, lo, hi, default):
+        """Add a label + slider + value label row. Returns (label, slider, value_label)."""
+        row = QHBoxLayout()
+        lbl = QLabel(tr(label_key))
+        row.addWidget(lbl)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(lo, hi)
+        slider.setValue(default)
+        row.addWidget(slider, 1)
+        val = QLabel(self._fmt_slider(default, lo, hi))
+        val.setProperty("class", "value-label")
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(val)
+        parent_layout.addLayout(row)
+        return lbl, slider, val
 
     @staticmethod
-    def _section_label(parent, text):
-        ctk.CTkLabel(
-            parent, text=text,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="gray",
-        ).pack(anchor="w", padx=16, pady=(12, 2))
+    def _fmt_slider(v, lo, hi):
+        """Format a slider value: if the range looks like x100 float, show decimal."""
+        if hi == 200 and lo == 0:
+            return f"{v / 100.0:.2f}"
+        if hi == 500 and lo == 10:
+            return f"{v / 100.0:.1f}"
+        return str(v)
 
-    def _build_adj_slider(self, parent, label, callback, default_val=1.0):
-        frame = ctk.CTkFrame(parent, fg_color="transparent")
-        frame.pack(fill="x", padx=16, pady=3)
+    # ──────────────────────────────────────────────────
+    #  Signal Wiring
+    # ──────────────────────────────────────────────────
 
-        ctk.CTkLabel(
-            frame, text=label, font=ctk.CTkFont(size=11),
-        ).pack(side="left")
+    def _wire_signals(self):
+        # Template
+        self._combo_template.currentIndexChanged.connect(self._on_template_changed)
+        self._btn_add_template.clicked.connect(self._on_add_template)
 
-        val_label = ctk.CTkLabel(
-            frame, text=f"{default_val:.2f}",
-            font=ctk.CTkFont(size=10), width=36,
-        )
-        val_label.pack(side="right")
+        # Framing
+        self._combo_framing.currentIndexChanged.connect(self._on_framing_changed)
 
-        slider = ctk.CTkSlider(
-            frame, from_=SLIDER_MIN, to=SLIDER_MAX,
-            command=lambda v, cb=callback, vl=val_label: (
-                vl.configure(text=f"{v:.2f}"),
-                cb(v),
-            ),
-        )
-        slider.set(default_val)
-        slider.pack(side="right", fill="x", expand=True, padx=6)
-        return slider
+        # Photo
+        self._btn_load_photo.clicked.connect(self._on_load_photo)
 
-    # ------------------------------------------------------------------ #
-    #  CALLBACKS                                                         #
-    # ------------------------------------------------------------------ #
+        # Tools
+        self._tool_group.buttonClicked.connect(self._on_tool_changed)
+        self._combo_layer.currentIndexChanged.connect(self._on_layer_changed)
+        self._slider_brush.valueChanged.connect(self._on_brush_changed)
+        self._slider_font.valueChanged.connect(self._on_font_changed)
+        self._btn_color.clicked.connect(self._on_color_pick)
+        self._btn_clear.clicked.connect(self._on_clear_annotations)
 
-    def _on_template_change(self, name):
+        # Adjustments
+        self._slider_brightness.valueChanged.connect(self._on_brightness)
+        self._slider_contrast.valueChanged.connect(self._on_contrast)
+        self._slider_sharpness.valueChanged.connect(self._on_sharpness)
+        self._slider_zoom.valueChanged.connect(self._on_zoom_speed)
+        self._btn_reset.clicked.connect(self._on_reset_adjustments)
+
+        # AI
+        self._chk_ai.stateChanged.connect(lambda _: None)
+
+        # Export
+        self._combo_preset.currentIndexChanged.connect(self._on_preset_changed)
+        self._btn_save.clicked.connect(self._on_save_image)
+        self._btn_batch.clicked.connect(self._on_batch_process)
+
+        # Settings
+        self._combo_lang.currentIndexChanged.connect(self._on_language_changed)
+        self._chk_dark.stateChanged.connect(self._on_theme_toggled)
+
+        # Credits
+        self._btn_github.clicked.connect(lambda: webbrowser.open(GITHUB_REPO_URL))
+
+        # Text tab
+        self._combo_provider.currentIndexChanged.connect(self._on_provider_changed)
+        self._btn_env.clicked.connect(self._on_edit_env)
+        self._btn_polish.clicked.connect(self._on_polish_text)
+        self._btn_copy.clicked.connect(self._on_copy_output)
+
+        # Initial model list
+        self._refresh_model_list()
+
+    # ──────────────────────────────────────────────────
+    #  i18n Retranslation
+    # ──────────────────────────────────────────────────
+
+    def _retranslate_ui(self):
+        """Re-apply every translatable string from the current language.
+        Preserves widget state (slider positions, combo selections, etc.)."""
+        self.setWindowTitle(APP_WINDOW_TITLE)
+
+        # Tabs
+        self._tab_widget.setTabText(0, tr("tab_photo"))
+        self._tab_widget.setTabText(1, tr("tab_text"))
+        self._tab_widget.setTabText(2, tr("tab_vector"))
+
+        # Left sidebar — photo tab
+        self._lbl_subtitle.setText(tr("app_subtitle"))
+        self._lbl_template.setText(tr("lbl_template"))
+        self._btn_add_template.setText(tr("btn_add_template"))
+        self._lbl_framing.setText(tr("lbl_framing_mode"))
+
+        idx = self._combo_framing.currentIndex()
+        self._combo_framing.blockSignals(True)
+        self._combo_framing.clear()
+        self._combo_framing.addItems([tr("mode_pan_zoom"), tr("mode_auto_fit")])
+        self._combo_framing.setCurrentIndex(max(0, idx))
+        self._combo_framing.blockSignals(False)
+
+        self._lbl_photo.setText(tr("lbl_photo"))
+        self._btn_load_photo.setText(tr("btn_load_photo"))
+        if not self._image_processor.has_master():
+            self._lbl_photo_info.setText(tr("lbl_no_photo"))
+
+        self._lbl_tools.setText(tr("lbl_tools"))
+        self._btn_move.setText(tr("btn_move"))
+        self._btn_draw.setText(tr("btn_draw"))
+        self._btn_text_tool.setText(tr("btn_text"))
+        self._lbl_brush.setText(tr("lbl_brush"))
+        self._txt_annotation.setPlaceholderText(tr("txt_placeholder"))
+        self._lbl_font_size.setText(tr("lbl_font_size"))
+        self._btn_clear.setText(tr("btn_clear_annotations"))
+        self._chk_dark.setText(tr("switch_dark_mode"))
+        self._lbl_credits.setText(tr("lbl_developed_by"))
+        self._btn_github.setText(tr("btn_github"))
+
+        # Right sidebar
+        self._lbl_adj.setText(tr("lbl_adjustments"))
+        self._lbl_brightness.setText(tr("lbl_brightness"))
+        self._lbl_contrast.setText(tr("lbl_contrast"))
+        self._lbl_sharpness.setText(tr("lbl_sharpness"))
+        self._lbl_zoom.setText(tr("lbl_zoom_step"))
+        self._btn_reset.setText(tr("btn_reset_all"))
+        self._lbl_ai.setText(tr("lbl_ai_upscale"))
+        self._chk_ai.setText(tr("switch_enable"))
+        self._update_ai_status_label()
+        self._lbl_export.setText(tr("lbl_export"))
+        self._btn_save.setText(tr("btn_save_image"))
+        self._btn_batch.setText(tr("btn_batch_process"))
+
+        # Text tab
+        self._lbl_provider.setText(tr("lbl_model_provider"))
+        self._lbl_model_txt.setText(tr("lbl_model"))
+        self._btn_env.setText(tr("btn_edit_env"))
+        self._lbl_tone.setText(tr("lbl_tone"))
+        self._lbl_length.setText(tr("lbl_length"))
+        self._lbl_custom.setText(tr("lbl_custom_prompt"))
+        self._lbl_rough.setText(tr("lbl_rough_input"))
+        self._lbl_polished.setText(tr("lbl_polished_output"))
+        self._btn_polish.setText(tr("btn_polish_text"))
+        self._btn_copy.setText(tr("btn_copy_output"))
+
+    # ──────────────────────────────────────────────────
+    #  Event Handlers — Photo Tab
+    # ──────────────────────────────────────────────────
+
+    def _on_template_changed(self, index):
+        name = self._combo_template.currentText()
         if not name:
             return
-        img = self._templates.get_template_image(name)
-        if img is None:
-            messagebox.showerror(
-                self._t("msg_error"), f"Template file not found for '{name}'."
-            )
-            return
-        self._current_template_image = img
-        tw, th = img.size
-        self._width_var.set(str(tw))
-        self._height_var.set(str(th))
-        self._canvas_engine.set_template(img)
-        self._refresh_canvas_photo()
+        img = self._template_manager.get_template_image(name)
+        if img:
+            self._canvas_engine.set_template(img)
+            self._sync_export_crop()
+            self._update_status()
 
     def _on_add_template(self):
-        path = filedialog.askopenfilename(filetypes=TEMPLATE_FILETYPES)
+        path, _ = QFileDialog.getOpenFileName(self, "Add Template", "", "PNG Images (*.png)")
         if not path:
             return
-        name = simpledialog.askstring(
-            "Template Name", "Enter a display name for this template:"
-        )
-        if not name or not name.strip():
-            return
-        name = name.strip()
-        self._templates.add_template(name, path)
-        names = self._templates.get_names()
-        self._template_combo.configure(values=names)
-        self._template_var.set(name)
-        self._on_template_change(name)
-        messagebox.showinfo(
-            self._t("msg_success"), f"Template '{name}' has been saved."
-        )
+        name = os.path.splitext(os.path.basename(path))[0]
+        self._template_manager.add_template(name, path)
+        self._refresh_template_list()
+        idx = self._combo_template.findText(name)
+        if idx >= 0:
+            self._combo_template.setCurrentIndex(idx)
 
-    def _on_mode_change(self, value):
-        mode = "pan_zoom" if value == self._t("mode_pan_zoom") else "auto_fit"
-        self._canvas_engine.set_mode(mode)
-
-    def _on_active_layer_change(self, value):
-        layer = "photo" if value == "Photo" else "template"
-        self._canvas_engine.set_active_layer(layer)
+    def _on_framing_changed(self, index):
+        self._canvas_engine.set_mode("auto_fit" if index == 1 else "pan_zoom")
 
     def _on_load_photo(self):
-        path = filedialog.askopenfilename(filetypes=IMAGE_FILETYPES)
+        filt = "Image Files (*.png *.jpg *.jpeg *.webp *.bmp *.tiff *.tif *.heic *.pdf *.svg);;All Files (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Load Photo", "", filt)
         if not path:
             return
         try:
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".pdf":
-                import fitz
-                doc = fitz.open(path)
-                page = doc.load_page(0)
-                pix = page.get_pixmap(dpi=300)
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert("RGBA")
-            elif ext == ".svg":
-                import cairosvg
-                import io
-                png_data = cairosvg.svg2png(url=path)
-                img = Image.open(io.BytesIO(png_data)).convert("RGBA")
-            else:
-                img = Image.open(path).convert("RGBA")
-        except Exception as exc:
-            messagebox.showerror(self._t("msg_error"), f"Failed to load image:\n{exc}")
-            return
+            img = self._load_image(path)
+            self._image_processor.set_master(img)
 
-        self._processor.set_master(img)
-        self._file_label.configure(text=os.path.basename(path))
-        self._gpu.clear_vram()
+            tname = self._combo_template.currentText()
+            tsize = self._template_manager.get_template_size(tname)
+            proxy = self._image_processor.get_proxy(self._brightness, self._contrast, self._sharpness)
+            msize = self._image_processor.get_master_size()
 
-        template_size = None
-        if self._current_template_image:
-            template_size = self._current_template_image.size
+            self._canvas_engine.set_photo(proxy, msize, tsize)
+            w, h = msize
+            self._lbl_photo_info.setText(f"{os.path.basename(path)}  ({w}×{h})")
+            self._update_status()
+        except Exception as e:
+            QMessageBox.critical(self, tr("msg_error"), str(e))
 
-        proxy = self._processor.get_proxy(
-            self._brightness, self._contrast, self._sharpness,
-        )
-        self._canvas_engine.set_photo(proxy, img.size, template_size)
+    def _on_tool_changed(self, button):
+        tools = {self._btn_move: "move", self._btn_draw: "draw", self._btn_text_tool: "text"}
+        self._canvas_engine.set_tool(tools.get(button, "move"))
 
-    def _on_tool_change(self, tool):
-        self._current_tool = tool
-        self._canvas_engine.set_tool(tool)
+    def _on_layer_changed(self, index):
+        self._canvas_engine.set_active_layer("template" if index == 1 else "photo")
 
-        btn_map = {
-            "move": self._move_btn,
-            "draw": self._draw_btn,
-            "text": self._text_btn,
-        }
-        for t, btn in btn_map.items():
-            if t == tool:
-                btn.configure(fg_color=ACCENT_COLOR, border_width=0)
-            else:
-                btn.configure(
-                    fg_color="transparent",
-                    border_width=1, border_color="gray",
-                )
+    def _on_brush_changed(self, v):
+        self._lbl_brush_val.setText(str(v))
+        self._canvas_engine.set_brush_width(v)
+
+    def _on_font_changed(self, v):
+        self._lbl_font_val.setText(str(v))
 
     def _on_color_pick(self):
-        result = colorchooser.askcolor(
-            initialcolor=self._current_color, title="Pick a Color",
-        )
-        if result and result[1]:
-            self._current_color = result[1]
-            self._color_preview.configure(
-                fg_color=self._current_color,
-                hover_color=self._current_color,
+        c = QColorDialog.getColor()
+        if c.isValid():
+            self._canvas_engine.set_draw_color(c.name())
+            self._btn_color.setStyleSheet(
+                f"background-color: {c.name()}; border-radius: 4px; border: none;"
             )
-            self._canvas_engine.set_draw_color(self._current_color)
-
-    def _on_brush_change(self, value):
-        self._brush_width = int(value)
-        self._canvas_engine.set_brush_width(self._brush_width)
-
-    def _on_font_size_change(self, value):
-        self._font_size = int(value)
-        self._font_val_label.configure(text=str(int(value)))
-
-    def _on_canvas_click(self, cx, cy):
-        text = self._text_entry.get().strip()
-        if not text:
-            messagebox.showinfo(
-                "Info", "Type some text in the text field first."
-            )
-            return
-        nx, ny = self._canvas_engine.canvas_to_normalized(cx, cy)
-        nsize = self._font_size / self._canvas_engine.view_min_dim
-        self._annotations.add_text(
-            nx, ny, text, self._current_color, nsize,
-        )
-        self._canvas_engine.request_render()
 
     def _on_clear_annotations(self):
         self._annotations.clear()
         self._canvas_engine.request_render()
 
-    def _on_export_dim_change(self, *args):
-        try:
-            w = int(self._width_var.get())
-            h = int(self._height_var.get())
-            if w > 0 and h > 0:
-                self._canvas_engine.set_export_size(w, h)
-        except ValueError:
-            pass
-
-    def _on_add_text_center(self):
-        text = self._text_entry.get().strip()
-        if not text:
-            messagebox.showinfo(
-                "Info", "Type some text in the text field first."
-            )
-            return
-        # Add text to the exact center (0.5, 0.5)
-        nsize = self._font_size / self._canvas_engine.view_min_dim
-        self._annotations.add_text(
-            0.5, 0.5, text, self._current_color, nsize,
-        )
+    def _on_canvas_click(self, x, y):
+        text = self._txt_annotation.text().strip() or "Text"
+        nx, ny = self._canvas_engine.canvas_to_normalized(x, y)
+        nsize = self._slider_font.value() / max(1, self._canvas_engine.view_min_dim)
+        self._annotations.add_text(nx, ny, text, "#ffffff", nsize)
         self._canvas_engine.request_render()
 
-    def _on_brightness(self, value):
-        self._brightness = value
-        self._schedule_proxy_update()
+    # ─── Adjustments ───────────────────────────────
 
-    def _on_contrast(self, value):
-        self._contrast = value
-        self._schedule_proxy_update()
+    def _on_brightness(self, v):
+        self._brightness = v / 100.0
+        self._lbl_br_val.setText(f"{self._brightness:.2f}")
+        self._push_proxy()
 
-    def _on_sharpness(self, value):
-        self._sharpness = value
-        self._schedule_proxy_update()
+    def _on_contrast(self, v):
+        self._contrast = v / 100.0
+        self._lbl_co_val.setText(f"{self._contrast:.2f}")
+        self._push_proxy()
 
-    def _on_zoom_step(self, value):
-        if hasattr(self, '_canvas_engine'):
-            self._canvas_engine.set_zoom_step(value)
+    def _on_sharpness(self, v):
+        self._sharpness = v / 100.0
+        self._lbl_sh_val.setText(f"{self._sharpness:.2f}")
+        self._push_proxy()
 
-    def _schedule_proxy_update(self):
-        if self._proxy_update_job is not None:
-            self.after_cancel(self._proxy_update_job)
-        self._proxy_update_job = self.after(
-            ADJUSTMENT_DEBOUNCE_MS, self._refresh_canvas_photo,
-        )
+    def _on_zoom_speed(self, v):
+        step = v / 100.0
+        self._lbl_zm_val.setText(f"{step:.1f}")
+        self._canvas_engine.set_zoom_step(step)
 
     def _on_reset_adjustments(self):
-        self._brightness = 1.0
-        self._contrast = 1.0
-        self._sharpness = 1.0
-        self._brightness_slider.set(1.0)
-        self._contrast_slider.set(1.0)
-        self._sharpness_slider.set(1.0)
-        self._zoom_step_slider.set(ZOOM_STEP_DEFAULT)
-        self._on_zoom_step(ZOOM_STEP_DEFAULT)
-        self._refresh_canvas_photo()
+        self._slider_brightness.setValue(100)
+        self._slider_contrast.setValue(100)
+        self._slider_sharpness.setValue(100)
+        self._slider_zoom.setValue(100)
 
-    def _on_ai_toggle(self):
-        if self._ai_switch.get():
-            if not self._gpu.has_torch():
-                self._ai_switch.deselect()
-                messagebox.showwarning(
-                    self._t("msg_warning"), 
-                    "PyTorch (torch) is not installed. To use AI Upscaling, please install PyTorch (with CUDA if using an NVIDIA GPU)."
-                )
-                self._ai_upscale_enabled = False
-                return
-            self._ai_upscale_enabled = True
-        else:
-            self._ai_upscale_enabled = False
+    # ─── Export ─────────────────────────────────────
 
-    def _on_scale_change(self, value):
-        self._ai_scale = int(value.replace("x", ""))
+    def _on_preset_changed(self, index):
+        n = len(INSTAGRAM_PRESETS)
+        self._wgt_custom.setVisible(index == n + 1)
+        self._sync_export_crop()
 
-    def _on_preset(self, w, h):
-        self._width_var.set(str(w))
-        self._height_var.set(str(h))
-
-    def _on_preset_original(self):
-        if self._current_template_image:
-            tw, th = self._current_template_image.size
-            self._width_var.set(str(tw))
-            self._height_var.set(str(th))
-
-    def _on_theme_toggle(self):
-        mode = self._theme_switch.get()
-        ctk.set_appearance_mode(mode)
-        bg = "#12121f" if mode == "dark" else "#dee2e6"
-        self._canvas_engine.widget.configure(bg=bg)
-
-    def _on_save(self):
-        if not self._processor.has_master():
-            messagebox.showwarning(
-                self._t("msg_warning"), self._t("msg_no_photo") if hasattr(self, "_t") else "Please load a photo first.",
-            )
+    def _on_save_image(self):
+        if not self._image_processor.has_master():
+            QMessageBox.warning(self, tr("msg_warning"), tr("lbl_no_photo"))
             return
-        if self._current_template_image is None:
-            messagebox.showwarning(
-                self._t("msg_warning"), "Please select a template first.",
-            )
+        tname = self._combo_template.currentText()
+        timg = self._template_manager.get_template_image(tname)
+        if timg is None:
+            QMessageBox.warning(self, tr("msg_warning"), tr("msg_select_template"))
             return
 
-        try:
-            tw = int(self._width_var.get())
-            th = int(self._height_var.get())
-            if tw <= 0 or th <= 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror(
-                self._t("msg_error"), "Please enter valid positive width and height.",
-            )
-            return
-
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".jpg", filetypes=EXPORT_FILETYPES,
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("btn_save_image"), "",
+            "JPEG (*.jpg);;PNG (*.png);;HEIC (*.heic)"
         )
-        if not save_path:
+        if not path:
             return
 
-        mode = (
-            "pan_zoom"
-            if self._mode_var.get() == self._t("mode_pan_zoom")
-            else "auto_fit"
-        )
-
+        tw, th = self._export_size(timg)
+        mode = "auto_fit" if self._combo_framing.currentIndex() == 1 else "pan_zoom"
         try:
-            self._export.export_single(
-                photo_master=self._processor.get_master(),
-                template_image=self._current_template_image,
-                mode=mode,
+            self._export_pipeline.export_single(
+                photo_master=self._image_processor.get_master(),
+                template_image=timg, mode=mode,
                 photo_scale=self._canvas_engine.photo_scale,
                 photo_offset_x=self._canvas_engine.photo_offset_x,
                 photo_offset_y=self._canvas_engine.photo_offset_y,
                 template_scale=self._canvas_engine.template_scale,
                 template_offset_x=self._canvas_engine.template_offset_x,
                 template_offset_y=self._canvas_engine.template_offset_y,
-                brightness=self._brightness,
-                contrast=self._contrast,
+                brightness=self._brightness, contrast=self._contrast,
                 sharpness=self._sharpness,
-                target_w=tw,
-                target_h=th,
-                save_path=save_path,
-                use_ai_upscale=self._ai_upscale_enabled,
-                ai_scale=self._ai_scale,
+                target_w=tw, target_h=th, save_path=path,
+                use_ai_upscale=self._chk_ai.isChecked(),
             )
-            messagebox.showinfo(
-                self._t("msg_success"), "Image saved in full quality!"
-            )
-        except Exception as exc:
-            messagebox.showerror(
-                self._t("msg_error"), f"Export failed:\n{exc}"
-            )
+            QMessageBox.information(self, tr("msg_success"), tr("msg_done"))
+        except Exception as e:
+            QMessageBox.critical(self, tr("msg_error"), str(e))
 
-    def _on_batch(self):
-        if self._current_template_image is None:
-            messagebox.showwarning(
-                self._t("msg_warning"), "Please select a template first.",
-            )
+    def _on_batch_process(self):
+        tname = self._combo_template.currentText()
+        timg = self._template_manager.get_template_image(tname)
+        if timg is None:
+            QMessageBox.warning(self, tr("msg_warning"), tr("msg_select_template"))
             return
 
-        input_dir = filedialog.askdirectory(
-            title="Select Input Photo Folder",
-        )
-        if not input_dir:
+        in_dir = QFileDialog.getExistingDirectory(self, "Input Directory")
+        if not in_dir:
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Output Directory")
+        if not out_dir:
             return
 
-        output_dir = filedialog.askdirectory(
-            title="Select Output Folder",
-        )
-        if not output_dir:
-            return
+        self._lbl_status.setText(tr("msg_batch_starting"))
+        QApplication.processEvents()
 
-        self._progress.pack(fill="x", padx=16, pady=(6, 2))
-        self._progress_label.pack(anchor="w", padx=16, pady=(0, 6))
-        self._progress.set(0)
-        self._progress_label.configure(text=self._t("msg_batch_starting"))
+        def prog(cur, tot):
+            self._lbl_status.setText(tr("msg_batch_processing", current=cur, total=tot))
+            QApplication.processEvents()
 
-        def run():
-            def on_progress(current, total):
-                self.after(0, lambda c=current, t=total: (
-                    self._progress.set(c / t),
-                    self._progress_label.configure(
-                        text=self._t("msg_batch_processing").format(current=c, total=t)
-                    ),
-                ))
-
-            count = self._export.batch_process(
-                input_dir=input_dir,
-                output_dir=output_dir,
-                template_image=self._current_template_image,
+        try:
+            n = self._export_pipeline.batch_process(
+                input_dir=in_dir, output_dir=out_dir, template_image=timg,
                 template_scale=self._canvas_engine.template_scale,
                 template_offset_x=self._canvas_engine.template_offset_x,
                 template_offset_y=self._canvas_engine.template_offset_y,
-                brightness=self._brightness,
-                contrast=self._contrast,
+                brightness=self._brightness, contrast=self._contrast,
                 sharpness=self._sharpness,
-                use_ai_upscale=self._ai_upscale_enabled,
-                ai_scale=self._ai_scale,
-                progress_callback=on_progress,
+                use_ai_upscale=self._chk_ai.isChecked(),
+                progress_callback=prog,
             )
-            self.after(0, lambda: self._batch_done(count))
+            QMessageBox.information(self, tr("msg_success"), tr("msg_batch_complete", count=n))
+        except Exception as e:
+            QMessageBox.critical(self, tr("msg_error"), str(e))
+        self._lbl_status.setText("Ready")
 
-        threading.Thread(target=run, daemon=True).start()
+    # ─── Settings ──────────────────────────────────
 
-    def _batch_done(self, count):
-        self._progress.pack_forget()
-        self._progress_label.pack_forget()
-        messagebox.showinfo(
-            self._t("msg_success"),
-            self._t("msg_batch_complete").format(count=count),
-        )
+    def _on_language_changed(self, index):
+        code = self._combo_lang.currentData()
+        if code:
+            i18n.set_language(code)
 
-    # ------------------------------------------------------------------ #
-    #  INTERNAL                                                          #
-    # ------------------------------------------------------------------ #
+    def _on_theme_toggled(self, state):
+        self._dark_mode = bool(state)
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(theme.get_theme(self._dark_mode))
 
-    def _refresh_canvas_photo(self):
-        self._proxy_update_job = None
-        if not self._processor.has_master():
+    # ─── Text Tab ──────────────────────────────────
+
+    def _on_provider_changed(self, _index):
+        self._refresh_model_list()
+
+    def _on_edit_env(self):
+        path = get_env_file_path()
+        if not os.path.exists(path):
+            with open(path, "w") as f:
+                f.write("OPENAI_API_KEY=\nGEMINI_API_KEY=\n")
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            os.system(f'open "{path}"')
+        else:
+            os.system(f'xdg-open "{path}"')
+
+    def _on_polish_text(self):
+        raw = self._txt_input.toPlainText().strip()
+        if not raw:
+            QMessageBox.warning(self, tr("msg_warning"), tr("msg_enter_text"))
             return
-        proxy = self._processor.get_proxy(
-            self._brightness, self._contrast, self._sharpness,
+
+        model = self._combo_model.currentText()
+        if model in ("Loading...", "No models found"):
+            return
+
+        provider = self._combo_provider.currentText()
+        mtype = "Ollama" if provider == "Ollama" else "Paid APIs"
+
+        self._btn_polish.setEnabled(False)
+        self._btn_polish.setText(tr("msg_generating"))
+        self._txt_output.clear()
+
+        self._text_worker = _TextWorker(
+            mtype, model, i18n.get_language(),
+            self._combo_tone.currentText(),
+            raw,
+            self._combo_length.currentText(),
+            self._txt_custom.text().strip(),
         )
-        if proxy is not None:
+        self._text_worker.finished.connect(self._on_text_ok)
+        self._text_worker.error.connect(self._on_text_err)
+        self._text_worker.start()
+
+    def _on_text_ok(self, text):
+        self._txt_output.setPlainText(text)
+        self._btn_polish.setEnabled(True)
+        self._btn_polish.setText(tr("btn_polish_text"))
+        self._lbl_status.setText(tr("msg_done"))
+
+    def _on_text_err(self, msg):
+        if "API_KEY_MISSING" in msg:
+            QMessageBox.warning(self, tr("msg_warning"), tr("msg_api_key_required"))
+        else:
+            QMessageBox.critical(self, tr("msg_error"), msg)
+        self._btn_polish.setEnabled(True)
+        self._btn_polish.setText(tr("btn_polish_text"))
+
+    def _on_copy_output(self):
+        t = self._txt_output.toPlainText()
+        if t:
+            QApplication.clipboard().setText(t)
+            self._lbl_status.setText(tr("msg_copied"))
+
+    # ──────────────────────────────────────────────────
+    #  Internal Helpers
+    # ──────────────────────────────────────────────────
+
+    def _push_proxy(self):
+        """Push an updated proxy image to the canvas after adjustment changes."""
+        if not self._image_processor.has_master():
+            return
+        proxy = self._image_processor.get_proxy(self._brightness, self._contrast, self._sharpness)
+        if proxy:
             self._canvas_engine.update_photo_proxy(proxy)
 
-    def _load_initial_template(self):
-        if self._templates.has_templates():
-            name = self._templates.get_names()[0]
-            self._template_var.set(name)
-            self._on_template_change(name)
+    def _load_image(self, path):
+        """Load any supported image format and return as RGBA PIL Image."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".svg":
+            try:
+                import cairosvg
+                data = cairosvg.svg2png(url=path)
+                return Image.open(io.BytesIO(data)).convert("RGBA")
+            except ImportError:
+                raise RuntimeError("SVG requires 'cairosvg'.  pip install cairosvg")
+        if ext == ".pdf":
+            try:
+                import fitz
+                doc = fitz.open(path)
+                pix = doc[0].get_pixmap(dpi=300)
+                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                return img.convert("RGBA")
+            except ImportError:
+                raise RuntimeError("PDF requires 'PyMuPDF'.  pip install PyMuPDF")
+        return Image.open(path).convert("RGBA")
+
+    def _refresh_template_list(self):
+        self._combo_template.blockSignals(True)
+        self._combo_template.clear()
+        names = self._template_manager.get_names()
+        if names:
+            self._combo_template.addItems(names)
+        self._combo_template.blockSignals(False)
+
+    def _refresh_model_list(self):
+        self._combo_model.clear()
+        prov = self._combo_provider.currentText()
+        if prov == "Ollama":
+            try:
+                from app.text_engine import TextEngine
+                models = TextEngine.get_ollama_models()
+                self._combo_model.addItems(models if models else ["No models found"])
+            except Exception:
+                self._combo_model.addItem("No models found")
+        else:
+            try:
+                from app.text_engine import TextEngine
+                self._combo_model.addItems(TextEngine.PAID_MODELS)
+            except Exception:
+                self._combo_model.addItems(["gpt-4o", "gemini-1.5-pro"])
+
+    def _update_ai_status_label(self):
+        if self._gpu_engine is None:
+            self._lbl_ai_status.setText(tr("msg_cpu_fallback"))
+            return
+        try:
+            import torch  # noqa: F401
+            self._lbl_ai_status.setText(tr("msg_torch_fallback"))
+        except ImportError:
+            self._lbl_ai_status.setText(tr("msg_cpu_fallback"))
+
+    def _export_size(self, template_img):
+        """Return (w, h) based on the current export preset selection."""
+        idx = self._combo_preset.currentIndex()
+        vals = list(INSTAGRAM_PRESETS.values())
+        if idx == 0:
+            return template_img.size
+        if 1 <= idx <= len(vals):
+            return vals[idx - 1]
+        return self._spin_w.value(), self._spin_h.value()
+
+    def _sync_export_crop(self):
+        tname = self._combo_template.currentText()
+        timg = self._template_manager.get_template_image(tname)
+        if timg is None:
+            return
+        w, h = self._export_size(timg)
+        self._canvas_engine.set_export_size(w, h)
+
+    def _update_status(self):
+        parts = []
+        if self._image_processor.has_master():
+            w, h = self._image_processor.get_master_size()
+            parts.append(f"Photo: {w}×{h}")
+        tname = self._combo_template.currentText()
+        if tname:
+            ts = self._template_manager.get_template_size(tname)
+            if ts:
+                parts.append(f"Template: {ts[0]}×{ts[1]}")
+        self._lbl_status.setText("  │  ".join(parts) if parts else "Ready")
+
+    # ──────────────────────────────────────────────────
+    #  Public API
+    # ──────────────────────────────────────────────────
+
+    def run(self):
+        """Show the window maximized."""
+        self.showMaximized()
+
+
+if __name__ == "__main__":
+    from app import theme as _t
+
+    app = QApplication(sys.argv)
+    app.setStyleSheet(_t.get_theme(dark=True))
+    win = PhotoTemplateStudioPro()
+    win.run()
+    sys.exit(app.exec())

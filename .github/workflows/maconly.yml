@@ -25,7 +25,6 @@ jobs:
         pyinstaller --windowed --onefile \
           --collect-all basicsr \
           --collect-all realesrgan \
-          --collect-all customtkinter \
           --add-data "templates.json:." \
           --name "PhotoTemplateStudio" main.py
 

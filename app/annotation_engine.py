@@ -1,10 +1,11 @@
-import tkinter as tk
+import os
 from PIL import ImageDraw, ImageFont
+from PySide6.QtGui import QPen, QColor, QFont
+from PySide6.QtCore import Qt
+
 from app.constants import FONT_FALLBACK_CHAIN
 
-
 class AnnotationEngine:
-
     def __init__(self):
         self._strokes = []
         self._texts = []
@@ -33,7 +34,7 @@ class AnnotationEngine:
     def text_count(self):
         return len(self._texts)
 
-    def render_to_canvas(self, canvas, view_w, view_h, offset_x, offset_y):
+    def render_to_canvas(self, scene, view_w, view_h, offset_x, offset_y):
         ref = max(1, min(view_w, view_h))
 
         for nx1, ny1, nx2, ny2, color, nw in self._strokes:
@@ -42,20 +43,23 @@ class AnnotationEngine:
             x2 = offset_x + nx2 * view_w
             y2 = offset_y + ny2 * view_h
             w = max(1, int(nw * ref))
-            canvas.create_line(
-                x1, y1, x2, y2,
-                fill=color, width=w,
-                capstyle=tk.ROUND, smooth=True,
-            )
+            
+            pen = QPen(QColor(color))
+            pen.setWidth(w)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            scene.addLine(x1, y1, x2, y2, pen)
 
         for nx, ny, text, color, nsize in self._texts:
             x = offset_x + nx * view_w
             y = offset_y + ny * view_h
             size = max(8, int(nsize * ref))
-            canvas.create_text(
-                x, y, text=text, fill=color,
-                font=("Arial", size, "bold"), anchor="nw",
-            )
+            
+            text_item = scene.addText(text)
+            text_item.setDefaultTextColor(QColor(color))
+            font = QFont("Arial", size, QFont.Bold)
+            text_item.setFont(font)
+            text_item.setPos(x, y)
 
     def render_to_export(self, draw, export_w, export_h):
         ref = max(1, min(export_w, export_h))

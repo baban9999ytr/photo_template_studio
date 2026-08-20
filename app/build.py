@@ -1,9 +1,6 @@
 import os
 import subprocess
-import sys
-import customtkinter
-
-ctk_path = os.path.dirname(customtkinter.__file__)
+import sys 
 sep = ";" if sys.platform.startswith("win") else ":"
 
 cmd = [
@@ -12,7 +9,6 @@ cmd = [
     "PyInstaller",
     "--noconsole",
     "--onefile",
-    f"--add-data={ctk_path}{sep}customtkinter",
     f"--add-data=app{sep}app",
     f"--add-data=templates.json{sep}.",
     "--name=PhotoTemplateStudioPro",

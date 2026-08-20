@@ -50,7 +50,7 @@ def get_pytorch_install_args(system):
 def install_requirements():
     print("--- Step 1: Installing base dependencies ---")
     base_packages = [
-        "customtkinter>=5.2.0",
+        "PySide6>=6.5.0",
         "Pillow>=10.0.0",
         "pillow-heif",
         "PyMuPDF",

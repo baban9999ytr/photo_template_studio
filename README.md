@@ -33,7 +33,7 @@ Developed by **Mustafa Göksal**
 ## Architecture
 
 This project has been modularized for high performance and maintainability:
-- `app/application.py`: Main UI orchestration (CustomTkinter) and event wiring.
+- `app/application.py`: Main UI orchestration (**PySide6**) and event wiring.
 - `app/canvas_engine.py`: Dual-mode (pan/zoom & auto-fit) rendering engine.
 - `app/gpu_engine.py`: Hardware-accelerated (CUDA/MPS) AI upscaling with CPU fallbacks.
 - `app/image_processor.py`: Proxy/Master caching and image adjustments.
@@ -53,7 +53,7 @@ cd PictureFormatter
 pip install -r requirements.txt
 ```
 
-*(Note: PyTorch and CustomTkinter are heavily utilized. Make sure to install the CUDA-specific PyTorch wheels if you have an NVIDIA GPU).*
+*(Note: PyTorch and PySide6 are heavily utilized. Make sure to install the CUDA-specific PyTorch wheels if you have an NVIDIA GPU).*
 
 ### 2. .env Configuration (For Paid Models)
 The Text Studio requires an `.env` file if you plan to use Paid APIs (OpenAI or Gemini).
@@ -69,6 +69,10 @@ GEMINI_API_KEY=AIza-your-gemini-key-here
 ### 3. Run the App
 ```bash
 python main.py
+```
+Alternatively, if installed via setuptools, run:
+```bash
+photo-studio
 ```
 
 ---

@@ -1,5 +1,9 @@
-import tkinter as tk
-from PIL import Image, ImageTk, ImageOps
+import math
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
+from PySide6.QtGui import QImage, QPixmap, QCursor, QColor, QPen, QTransform, QPainter
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PIL import Image, ImageOps
+
 from app.constants import (
     CANVAS_PREVIEW_SIZE,
     ZOOM_IN_FACTOR,
@@ -9,30 +13,34 @@ from app.constants import (
     RENDER_DEBOUNCE_MS,
 )
 
-
 class CanvasEngine:
-
-    def __init__(self, parent, annotation_engine, on_canvas_click=None):
+    def __init__(self, parent_layout, annotation_engine, on_canvas_click=None):
         self._annotations = annotation_engine
         self._on_canvas_click = on_canvas_click
 
+        self._scene = QGraphicsScene()
+        self._view = QGraphicsView(self._scene)
+        self._view.setAlignment(Qt.AlignCenter)
+        self._view.setRenderHint(QPainter.Antialiasing, False)
+        self._view.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        
+        self._view.setMouseTracking(True)
+        
+        parent_layout.addWidget(self._view)
+
         self._canvas_size = CANVAS_PREVIEW_SIZE
-        self._canvas = tk.Canvas(
-            parent,
-            bg="#12121f",
-            width=self._canvas_size,
-            height=self._canvas_size,
-            highlightthickness=0,
-            cursor="fleur",
-        )
-        self._canvas.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
 
         self._photo_proxy = None
         self._template_image = None
         self._master_photo_size = None
 
-        self._tk_photo = None
-        self._tk_template = None
+        self._qpixmap_photo = None
+        self._qpixmap_template = None
+        
+        self._photo_item = None
+        self._template_item = None
+        self._crop_box_item = None
+        self._crop_text_item = None
 
         self._photo_offset_x = 0.0
         self._photo_offset_y = 0.0
@@ -43,7 +51,6 @@ class CanvasEngine:
         self._template_scale = 1.0
 
         self._active_layer = "photo"
-
         self._mode = "pan_zoom"
         self._tool = "move"
         self._draw_color = "#e94560"
@@ -58,55 +65,43 @@ class CanvasEngine:
         self._view_offset_y = 0
         self._view_w = 0
         self._view_h = 0
-
-        self._render_pending = False
-        self._initial_render_done = False
+        
+        self._export_w = 0
+        self._export_h = 0
 
         self._zoom_step = 1.0
-
-        self._canvas.bind("<ButtonPress-1>", self._on_press)
-        self._canvas.bind("<B1-Motion>", self._on_drag)
-        self._canvas.bind("<ButtonRelease-1>", self._on_release)
-        self._canvas.bind("<MouseWheel>", self._on_scroll)
-        self._canvas.bind("<Button-4>", self._on_scroll)
-        self._canvas.bind("<Button-5>", self._on_scroll)
-        self._canvas.bind("<Configure>", self._on_resize)
+        self._render_timer = QTimer()
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._do_render)
+        self._initial_render_done = False
+        
+        self._view.resizeEvent = self._on_resize
+        self._view.mousePressEvent = self._on_press
+        self._view.mouseMoveEvent = self._on_drag
+        self._view.mouseReleaseEvent = self._on_release
+        self._view.wheelEvent = self._on_scroll
 
     @property
     def widget(self):
-        return self._canvas
+        return self._view
 
     @property
-    def photo_offset_x(self):
-        return self._photo_offset_x
-
+    def photo_offset_x(self): return self._photo_offset_x
     @property
-    def photo_offset_y(self):
-        return self._photo_offset_y
-
+    def photo_offset_y(self): return self._photo_offset_y
     @property
-    def photo_scale(self):
-        return self._photo_scale
-
+    def photo_scale(self): return self._photo_scale
     @property
-    def template_offset_x(self):
-        return self._template_offset_x
-
+    def template_offset_x(self): return self._template_offset_x
     @property
-    def template_offset_y(self):
-        return self._template_offset_y
-
+    def template_offset_y(self): return self._template_offset_y
     @property
-    def template_scale(self):
-        return self._template_scale
-
+    def template_scale(self): return self._template_scale
     @property
-    def view_min_dim(self):
-        return max(1, min(self._view_w, self._view_h))
+    def view_min_dim(self): return max(1, min(self._view_w, self._view_h))
 
-    def set_zoom_step(self, step):
-        self._zoom_step = step
-
+    def set_zoom_step(self, step): self._zoom_step = step
+    
     def set_active_layer(self, layer):
         self._active_layer = layer
         self.request_render()
@@ -114,24 +109,29 @@ class CanvasEngine:
     def set_mode(self, mode):
         self._mode = mode
         if mode == "auto_fit":
-            self._canvas.config(cursor="arrow")
+            self._view.viewport().setCursor(Qt.ArrowCursor)
         elif self._tool == "move":
-            self._canvas.config(cursor="fleur")
+            self._view.viewport().setCursor(Qt.SizeAllCursor)
         self.request_render()
 
     def set_tool(self, tool):
         self._tool = tool
-        cursors = {"move": "fleur", "draw": "pencil", "text": "crosshair"}
+        cursors = {"move": Qt.SizeAllCursor, "draw": Qt.CrossCursor, "text": Qt.IBeamCursor}
         if tool == "move":
-            self._canvas.config(cursor="fleur")
+            self._view.viewport().setCursor(Qt.SizeAllCursor)
         else:
-            self._canvas.config(cursor=cursors.get(tool, "arrow"))
+            self._view.viewport().setCursor(cursors.get(tool, Qt.ArrowCursor))
 
-    def set_draw_color(self, color):
-        self._draw_color = color
+    def set_draw_color(self, color): self._draw_color = color
+    def set_brush_width(self, width_px): self._brush_width = width_px
 
-    def set_brush_width(self, width_px):
-        self._brush_width = width_px
+    def canvas_to_normalized(self, cx, cy):
+        """Convert canvas pixel coordinates to normalized (0-1) coordinates."""
+        if self._view_w <= 0 or self._view_h <= 0:
+            return 0.0, 0.0
+        nx = (cx - self._view_offset_x) / self._view_w
+        ny = (cy - self._view_offset_y) / self._view_h
+        return nx, ny
 
     def set_photo(self, proxy_image, master_size, template_size):
         self._photo_proxy = proxy_image
@@ -161,38 +161,33 @@ class CanvasEngine:
         self.request_render()
 
     def request_render(self):
-        if not self._render_pending:
-            self._render_pending = True
-            self._canvas.after(RENDER_DEBOUNCE_MS, self._do_render)
-
-    def canvas_to_normalized(self, cx, cy):
-        if self._view_w <= 0 or self._view_h <= 0:
-            return 0.0, 0.0
-        nx = (cx - self._view_offset_x) / self._view_w
-        ny = (cy - self._view_offset_y) / self._view_h
-        return nx, ny
+        self._render_timer.start(RENDER_DEBOUNCE_MS)
 
     def _on_resize(self, event):
-        new_size = min(event.width, event.height)
+        new_size = min(event.size().width(), event.size().height())
         if new_size >= 10:
             self._canvas_size = new_size
             self.request_render()
+        QGraphicsView.resizeEvent(self._view, event)
 
     def _on_press(self, event):
         if self._tool == "move":
-            self._drag_start_x = event.x
-            self._drag_start_y = event.y
+            self._drag_start_x = event.position().x()
+            self._drag_start_y = event.position().y()
         elif self._tool == "draw":
-            self._last_draw_x = event.x
-            self._last_draw_y = event.y
+            self._last_draw_x = event.position().x()
+            self._last_draw_y = event.position().y()
         elif self._tool == "text":
             if self._on_canvas_click:
-                self._on_canvas_click(event.x, event.y)
+                self._on_canvas_click(event.position().x(), event.position().y())
+        QGraphicsView.mousePressEvent(self._view, event)
 
     def _on_drag(self, event):
-        if self._tool == "move":
-            dx = event.x - self._drag_start_x
-            dy = event.y - self._drag_start_y
+        x = event.position().x()
+        y = event.position().y()
+        if self._tool == "move" and event.buttons() & Qt.LeftButton:
+            dx = x - self._drag_start_x
+            dy = y - self._drag_start_y
             if self._view_w > 0 and self._template_image:
                 tw, th = self._template_image.size
                 scale_x = tw / self._view_w
@@ -203,26 +198,24 @@ class CanvasEngine:
                 else:
                     self._photo_offset_x += dx * scale_x
                     self._photo_offset_y += dy * scale_y
-            self._drag_start_x = event.x
-            self._drag_start_y = event.y
+            self._drag_start_x = x
+            self._drag_start_y = y
             self.request_render()
-
-        elif self._tool == "draw":
+        elif self._tool == "draw" and event.buttons() & Qt.LeftButton:
             if self._view_w > 0 and self._view_h > 0:
                 nx1 = (self._last_draw_x - self._view_offset_x) / self._view_w
                 ny1 = (self._last_draw_y - self._view_offset_y) / self._view_h
-                nx2 = (event.x - self._view_offset_x) / self._view_w
-                ny2 = (event.y - self._view_offset_y) / self._view_h
+                nx2 = (x - self._view_offset_x) / self._view_w
+                ny2 = (y - self._view_offset_y) / self._view_h
                 nw = self._brush_width / max(1, self._canvas_size)
-                self._annotations.add_stroke(
-                    nx1, ny1, nx2, ny2, self._draw_color, nw
-                )
-            self._last_draw_x = event.x
-            self._last_draw_y = event.y
+                self._annotations.add_stroke(nx1, ny1, nx2, ny2, self._draw_color, nw)
+            self._last_draw_x = x
+            self._last_draw_y = y
             self.request_render()
+        QGraphicsView.mouseMoveEvent(self._view, event)
 
     def _on_release(self, event):
-        pass
+        QGraphicsView.mouseReleaseEvent(self._view, event)
 
     def _on_scroll(self, event):
         if self._mode != "pan_zoom" or self._tool != "move":
@@ -232,17 +225,18 @@ class CanvasEngine:
         if self._active_layer == "template" and self._template_image is None:
             return
 
+        delta = event.angleDelta().y()
         factor = 1.0
-        if event.num == 5 or (hasattr(event, "delta") and event.delta < 0):
+        if delta < 0:
             factor = 1.0 - (1.0 - ZOOM_OUT_FACTOR) * self._zoom_step
-        elif event.num == 4 or (hasattr(event, "delta") and event.delta > 0):
+        elif delta > 0:
             factor = 1.0 + (ZOOM_IN_FACTOR - 1.0) * self._zoom_step
 
         if self._view_w > 0 and self._template_image:
             tw, th = self._template_image.size
             ratio = self._view_w / tw
-            sx = event.x - (self._canvas.winfo_width() // 2)
-            sy = event.y - (self._canvas.winfo_height() // 2)
+            sx = event.position().x() - (self._view.width() // 2)
+            sy = event.position().y() - (self._view.height() // 2)
 
             if self._active_layer == "template":
                 old_scale = self._template_scale
@@ -260,28 +254,37 @@ class CanvasEngine:
                 self._photo_offset_y += (sy / ratio) * (1 - actual_factor)
 
         self.request_render()
+        QGraphicsView.wheelEvent(self._view, event)
+
+    def _pil_to_qpixmap(self, pil_image):
+        """Convert a PIL Image to QPixmap with safe buffer handling."""
+        if pil_image.mode != "RGBA":
+            pil_image = pil_image.convert("RGBA")
+        data = pil_image.tobytes("raw", "RGBA")
+        bytes_per_line = pil_image.width * 4
+        qimage = QImage(data, pil_image.width, pil_image.height,
+                        bytes_per_line, QImage.Format_RGBA8888)
+        # .copy() deep-copies pixel data so the Python bytes buffer can be freed safely
+        return QPixmap.fromImage(qimage.copy())
 
     def _do_render(self):
-        self._render_pending = False
-        self._canvas.delete("all")
+        self._scene.clear()
 
-        canvas_w = self._canvas.winfo_width()
-        canvas_h = self._canvas.winfo_height()
+        canvas_w = self._view.width()
+        canvas_h = self._view.height()
 
         if canvas_w < 10 or canvas_h < 10:
             if not self._initial_render_done:
-                self._canvas.after(50, self.request_render)
+                self._render_timer.start(50)
             return
 
         self._initial_render_done = True
+        self._scene.setSceneRect(0, 0, canvas_w, canvas_h)
 
         if self._template_image is None:
-            self._canvas.create_text(
-                canvas_w // 2, canvas_h // 2,
-                text="Select a template to begin",
-                fill="#555555",
-                font=("Arial", 14),
-            )
+            text = self._scene.addText("Select a template to begin")
+            text.setDefaultTextColor(QColor("#555555"))
+            text.setPos(canvas_w // 2 - text.boundingRect().width() / 2, canvas_h // 2)
             return
 
         tw, th = self._template_image.size
@@ -295,36 +298,21 @@ class CanvasEngine:
         offset_y = (canvas_h - view_h) // 2
         self._view_offset_x = offset_x
         self._view_offset_y = offset_y
-
         center_x = canvas_w // 2
         center_y = canvas_h // 2
 
-        self._canvas.create_rectangle(
-            offset_x - 1, offset_y - 1,
-            offset_x + view_w + 1, offset_y + view_h + 1,
-            outline="#333344", width=1,
-        )
+        self._scene.addRect(offset_x - 1, offset_y - 1, view_w + 2, view_h + 2, QPen(QColor("#333344")))
 
         if self._photo_proxy is not None:
             if self._mode == "auto_fit":
                 cx = max(0.0, min(1.0, 0.5 - (self._photo_offset_x / max(1, view_w))))
                 cy = max(0.0, min(1.0, 0.5 - (self._photo_offset_y / max(1, view_h))))
-                fitted = ImageOps.fit(
-                    self._photo_proxy, (view_w, view_h),
-                    method=Image.Resampling.LANCZOS,
-                    centering=(cx, cy)
-                )
-                self._tk_photo = ImageTk.PhotoImage(fitted)
-                self._canvas.create_image(
-                    center_x, center_y,
-                    anchor="center", image=self._tk_photo,
-                )
+                fitted = ImageOps.fit(self._photo_proxy, (view_w, view_h), method=Image.Resampling.LANCZOS, centering=(cx, cy))
+                self._qpixmap_photo = self._pil_to_qpixmap(fitted)
+                self._photo_item = self._scene.addPixmap(self._qpixmap_photo)
+                self._photo_item.setPos(center_x - view_w / 2, center_y - view_h / 2)
             else:
-                if self._master_photo_size:
-                    mw, mh = self._master_photo_size
-                else:
-                    mw, mh = self._photo_proxy.size
-
+                mw, mh = self._master_photo_size if self._master_photo_size else self._photo_proxy.size
                 display_pw = max(1, int(mw * self._photo_scale * ratio))
                 display_ph = max(1, int(mh * self._photo_scale * ratio))
 
@@ -334,18 +322,12 @@ class CanvasEngine:
                     display_pw = max(1, int(display_pw * shrink))
                     display_ph = max(1, int(display_ph * shrink))
 
-                preview = self._photo_proxy.resize(
-                    (display_pw, display_ph), Image.Resampling.LANCZOS,
-                )
-                self._tk_photo = ImageTk.PhotoImage(preview)
-
-                draw_x = center_x + int(self._photo_offset_x * ratio)
-                draw_y = center_y + int(self._photo_offset_y * ratio)
-
-                self._canvas.create_image(
-                    draw_x, draw_y,
-                    anchor="center", image=self._tk_photo,
-                )
+                preview = self._photo_proxy.resize((display_pw, display_ph), Image.Resampling.LANCZOS)
+                self._qpixmap_photo = self._pil_to_qpixmap(preview)
+                self._photo_item = self._scene.addPixmap(self._qpixmap_photo)
+                draw_x = center_x + int(self._photo_offset_x * ratio) - display_pw / 2
+                draw_y = center_y + int(self._photo_offset_y * ratio) - display_ph / 2
+                self._photo_item.setPos(draw_x, draw_y)
 
         display_tw = max(1, int(tw * self._template_scale * ratio))
         display_th = max(1, int(th * self._template_scale * ratio))
@@ -356,20 +338,14 @@ class CanvasEngine:
             display_tw = max(1, int(display_tw * shrink))
             display_th = max(1, int(display_th * shrink))
 
-        preview_template = self._template_image.resize(
-            (display_tw, display_th), Image.Resampling.LANCZOS,
-        )
-        self._tk_template = ImageTk.PhotoImage(preview_template)
+        preview_template = self._template_image.resize((display_tw, display_th), Image.Resampling.LANCZOS)
+        self._qpixmap_template = self._pil_to_qpixmap(preview_template)
+        self._template_item = self._scene.addPixmap(self._qpixmap_template)
+        draw_tx = center_x + int(self._template_offset_x * ratio) - display_tw / 2
+        draw_ty = center_y + int(self._template_offset_y * ratio) - display_th / 2
+        self._template_item.setPos(draw_tx, draw_ty)
 
-        draw_tx = center_x + int(self._template_offset_x * ratio)
-        draw_ty = center_y + int(self._template_offset_y * ratio)
-
-        self._canvas.create_image(
-            draw_tx, draw_ty,
-            anchor="center", image=self._tk_template,
-        )
-
-        if hasattr(self, "_export_w") and self._export_w > 0 and self._export_h > 0:
+        if self._export_w > 0 and self._export_h > 0:
             target_ratio = self._export_w / self._export_h
             template_ratio = tw / th
             if target_ratio > template_ratio:
@@ -384,19 +360,14 @@ class CanvasEngine:
             
             cx1 = center_x - cw / 2
             cy1 = center_y - ch / 2
-            cx2 = center_x + cw / 2
-            cy2 = center_y + ch / 2
             
-            self._canvas.create_rectangle(
-                cx1, cy1, cx2, cy2,
-                outline="#f39c12", width=2, dash=(6, 4)
-            )
-            self._canvas.create_text(
-                cx1 + 4, cy1 + 4,
-                text="Export Crop Box", fill="#f39c12", anchor="nw",
-                font=("Arial", 10, "bold")
-            )
+            pen = QPen(QColor("#f39c12"))
+            pen.setWidth(2)
+            pen.setStyle(Qt.DashLine)
+            self._scene.addRect(cx1, cy1, cw, ch, pen)
+            
+            text = self._scene.addText("Export Crop Box")
+            text.setDefaultTextColor(QColor("#f39c12"))
+            text.setPos(cx1 + 4, cy1 + 4)
 
-        self._annotations.render_to_canvas(
-            self._canvas, view_w, view_h, offset_x, offset_y,
-        )
+        self._annotations.render_to_canvas(self._scene, view_w, view_h, offset_x, offset_y)
