@@ -1,6 +1,6 @@
-import os
 import subprocess
-import sys 
+import sys
+
 sep = ";" if sys.platform.startswith("win") else ":"
 
 cmd = [

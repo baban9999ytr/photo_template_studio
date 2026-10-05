@@ -3,12 +3,12 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing Git tag to build and release, for example v1.0.0'
+        description: "Existing Git tag to build and release, for example v1.0.0"
         required: true
         type: string
 
@@ -60,7 +60,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
           cache: pip
 
       - name: Install Dependencies

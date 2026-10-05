@@ -1,9 +1,11 @@
 import os
 import threading
 import urllib.request
+
 import numpy as np
 from PIL import Image
-from app.constants import get_models_dir, ESRGAN_MODEL_URLS
+
+from app.constants import ESRGAN_MODEL_URLS, get_models_dir
 
 
 class GPUEngine:
@@ -22,6 +24,7 @@ class GPUEngine:
     def _detect_hardware(self):
         try:
             import torch
+
             self._torch = torch
             if torch.cuda.is_available():
                 self._device = "cuda"
@@ -33,8 +36,9 @@ class GPUEngine:
             pass
 
         try:
-            from realesrgan import RealESRGANer
             from basicsr.archs.rrdbnet_arch import RRDBNet
+            from realesrgan import RealESRGANer
+
             self._esrgan_available = True
         except ImportError:
             pass
@@ -101,21 +105,29 @@ class GPUEngine:
             return None
 
     def _get_esrgan_upscaler(self, scale):
-        from realesrgan import RealESRGANer
         from basicsr.archs.rrdbnet_arch import RRDBNet
+        from realesrgan import RealESRGANer
 
         if scale == 2:
             model_key = "RealESRGAN_x2plus"
             model = RRDBNet(
-                num_in_ch=3, num_out_ch=3, num_feat=64,
-                num_block=23, num_grow_ch=32, scale=2,
+                num_in_ch=3,
+                num_out_ch=3,
+                num_feat=64,
+                num_block=23,
+                num_grow_ch=32,
+                scale=2,
             )
             netscale = 2
         else:
             model_key = "RealESRGAN_x4plus"
             model = RRDBNet(
-                num_in_ch=3, num_out_ch=3, num_feat=64,
-                num_block=23, num_grow_ch=32, scale=4,
+                num_in_ch=3,
+                num_out_ch=3,
+                num_feat=64,
+                num_block=23,
+                num_grow_ch=32,
+                scale=4,
             )
             netscale = 4
 
@@ -169,9 +181,7 @@ class GPUEngine:
 
     def _upscale_pillow(self, image, scale):
         w, h = image.size
-        return image.resize(
-            (w * scale, h * scale), Image.Resampling.LANCZOS
-        )
+        return image.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
 
     def clear_vram(self):
         self._upscaler = None

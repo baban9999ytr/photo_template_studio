@@ -1,6 +1,8 @@
 import os
+
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
-from app.constants import SUPPORTED_IMAGE_EXTENSIONS, DEFAULT_EXPORT_QUALITY
+
+from app.constants import DEFAULT_EXPORT_QUALITY, SUPPORTED_IMAGE_EXTENSIONS
 
 
 class ExportPipeline:
@@ -40,9 +42,7 @@ class ExportPipeline:
 
         if use_ai_upscale:
             try:
-                adjusted = self._gpu.upscale(
-                    adjusted, scale=ai_scale, use_esrgan=True
-                )
+                adjusted = self._gpu.upscale(adjusted, scale=ai_scale, use_esrgan=True)
             except Exception:
                 pass
 
@@ -54,9 +54,7 @@ class ExportPipeline:
         else:
             render_w = max(1, int(original_w * photo_scale))
             render_h = max(1, int(original_h * photo_scale))
-            resized = adjusted.resize(
-                (render_w, render_h), Image.Resampling.LANCZOS
-            )
+            resized = adjusted.resize((render_w, render_h), Image.Resampling.LANCZOS)
 
             paste_x = (tw // 2) - (render_w // 2) + int(photo_offset_x)
             paste_y = (th // 2) - (render_h // 2) + int(photo_offset_y)
@@ -75,8 +73,7 @@ class ExportPipeline:
 
         template_layer = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
         template_layer.paste(
-            resized_template.convert("RGBA"),
-            (template_paste_x, template_paste_y)
+            resized_template.convert("RGBA"), (template_paste_x, template_paste_y)
         )
         final = Image.alpha_composite(final, template_layer)
 
@@ -109,16 +106,19 @@ class ExportPipeline:
     ):
         os.makedirs(output_dir, exist_ok=True)
 
-        files = sorted([
-            f for f in os.listdir(input_dir)
-            if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
-        ])
+        files = sorted(
+            [
+                f
+                for f in os.listdir(input_dir)
+                if os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS
+            ]
+        )
         total = len(files)
         if total == 0:
             return 0
 
         tw, th = template_image.size
-        
+
         template_w = max(1, int(tw * template_scale))
         template_h = max(1, int(th * template_scale))
         resized_template = template_image.resize(
@@ -128,8 +128,7 @@ class ExportPipeline:
         template_paste_y = (th // 2) - (template_h // 2) + int(template_offset_y)
         template_layer = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
         template_layer.paste(
-            resized_template.convert("RGBA"),
-            (template_paste_x, template_paste_y)
+            resized_template.convert("RGBA"), (template_paste_x, template_paste_y)
         )
 
         processed = 0
@@ -160,9 +159,7 @@ class ExportPipeline:
                 final = Image.alpha_composite(final, template_layer)
 
                 base_name = os.path.splitext(fname)[0]
-                output_path = os.path.join(
-                    output_dir, f"{base_name}_templated.jpg"
-                )
+                output_path = os.path.join(output_dir, f"{base_name}_templated.jpg")
                 self._save_image(final, output_path)
                 processed += 1
             except Exception:
@@ -195,15 +192,20 @@ class ExportPipeline:
         elif path.lower().endswith(".heic"):
             try:
                 import pillow_heif
+
                 pillow_heif.register_heif_opener()
                 image.save(path, "HEIC")
             except ImportError:
-                raise RuntimeError("HEIC export failed. Please install 'pillow-heif' library.")
+                raise RuntimeError(
+                    "HEIC export failed. Please install 'pillow-heif' library."
+                )
             except Exception as e:
                 raise RuntimeError(f"HEIC export failed: {e}")
         else:
             rgb = image.convert("RGB")
             rgb.save(
-                path, "JPEG",
-                quality=DEFAULT_EXPORT_QUALITY, subsampling=0,
+                path,
+                "JPEG",
+                quality=DEFAULT_EXPORT_QUALITY,
+                subsampling=0,
             )

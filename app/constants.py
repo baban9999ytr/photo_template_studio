@@ -1,6 +1,6 @@
 import os
-import sys
 import platform
+import sys
 
 APP_NAME = "PhotoTemplateStudioPro"
 APP_VERSION = "2.0.0"
@@ -43,7 +43,18 @@ INSTAGRAM_PRESETS = {
     "IG Story": (1080, 1920),
 }
 
-SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".pdf", ".svg"}
+SUPPORTED_IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".heic",
+    ".pdf",
+    ".svg",
+}
 
 IMAGE_FILETYPES = [
     ("Image Files", "*.png *.jpg *.jpeg *.webp *.bmp *.tiff *.tif *.heic *.pdf *.svg"),
@@ -95,7 +106,9 @@ ESRGAN_MODEL_URLS = {
 
 OLLAMA_API_URL = "http://localhost:11434"
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
 
 TEXT_TONES = ["Formal Business", "Casual", "Energetic"]
 TEXT_LENGTHS = ["Short", "Medium", "Long"]
@@ -338,8 +351,9 @@ I18N = {
             "énergique et captivant en français pour Instagram ou les Reels. "
             "Utilisez un langage excitant, des emojis et des accroches puissantes !"
         ),
-    }
+    },
 }
+
 
 def get_system_prompt(lang, tone, length="Medium", custom_inject=""):
     base_prompt = ""
@@ -351,13 +365,13 @@ def get_system_prompt(lang, tone, length="Medium", custom_inject=""):
         base_prompt = I18N[lang]["tone_prompt_energetic"]
     else:
         base_prompt = I18N[lang]["tone_prompt_formal"]
-        
+
     length_instruction = f" The target length of the output should be: {length}."
     prompt = base_prompt + length_instruction
-    
+
     if custom_inject:
         prompt += f"\n\nAdditionally, adhere to the following custom instruction: {custom_inject}"
-        
+
     return prompt
 
 

@@ -1,39 +1,63 @@
+import io
 import os
 import sys
-import io
 import webbrowser
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QLabel, QPushButton, QComboBox, QSlider, QLineEdit,
-    QScrollArea, QFrame, QCheckBox, QTextEdit, QFileDialog,
-    QButtonGroup, QSpinBox, QSizePolicy, QMessageBox, QColorDialog,
-    QSpacerItem,
-)
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
-from PIL import Image
 
-from app.constants import (
-    APP_WINDOW_TITLE, APP_MIN_SIZE,
-    SIDEBAR_LEFT_WIDTH, SIDEBAR_RIGHT_WIDTH,
-    GITHUB_REPO_URL, INSTAGRAM_PRESETS,
-    SUPPORTED_IMAGE_EXTENSIONS,
-    BRUSH_SIZE_MIN, BRUSH_SIZE_MAX, BRUSH_SIZE_DEFAULT,
-    FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_DEFAULT,
-    TEXT_TONES, TEXT_LENGTHS,
-    get_app_base_dir, get_env_file_path,
+from PIL import Image
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpacerItem,
+    QSpinBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
+
+from app import i18n, theme
 from app.annotation_engine import AnnotationEngine
 from app.canvas_engine import CanvasEngine
+from app.constants import (
+    APP_MIN_SIZE,
+    APP_WINDOW_TITLE,
+    BRUSH_SIZE_DEFAULT,
+    BRUSH_SIZE_MAX,
+    BRUSH_SIZE_MIN,
+    FONT_SIZE_MAX,
+    FONT_SIZE_MIN,
+    GITHUB_REPO_URL,
+    INSTAGRAM_PRESETS,
+    SIDEBAR_LEFT_WIDTH,
+    SIDEBAR_RIGHT_WIDTH,
+    TEXT_LENGTHS,
+    TEXT_TONES,
+    get_app_base_dir,
+    get_env_file_path,
+)
+from app.i18n import tr
 from app.image_processor import ImageProcessor
 from app.template_manager import TemplateManager
-from app import i18n
-from app.i18n import tr
-from app import theme
 
 # Register HEIF opener if available
 try:
     import pillow_heif
+
     pillow_heif.register_heif_opener()
 except ImportError:
     pass
@@ -43,8 +67,10 @@ except ImportError:
 # Background worker for AI text generation
 # ──────────────────────────────────────────────────────
 
+
 class _TextWorker(QThread):
     """Runs text generation in a background thread to keep the UI responsive."""
+
     finished = Signal(str)
     error = Signal(str)
 
@@ -55,6 +81,7 @@ class _TextWorker(QThread):
     def run(self):
         try:
             from app.text_engine import TextEngine
+
             result = TextEngine.generate_text(*self._args)
             self.finished.emit(result)
         except Exception as e:
@@ -64,6 +91,7 @@ class _TextWorker(QThread):
 # ──────────────────────────────────────────────────────
 # Main Application Window
 # ──────────────────────────────────────────────────────
+
 
 class PhotoTemplateStudioPro(QMainWindow):
     """Main application window — orchestrates all UI panels and engines."""
@@ -92,11 +120,13 @@ class PhotoTemplateStudioPro(QMainWindow):
         self._gpu_engine = None
         try:
             from app.gpu_engine import GpuEngine
+
             self._gpu_engine = GpuEngine()
         except Exception:
             pass
 
         from app.export_pipeline import ExportPipeline
+
         self._export_pipeline = ExportPipeline(
             self._gpu_engine, self._image_processor, self._annotations
         )
@@ -361,20 +391,24 @@ class PhotoTemplateStudioPro(QMainWindow):
         lay.addWidget(self._lbl_adj)
 
         # Brightness
-        self._lbl_brightness, self._slider_brightness, self._lbl_br_val = \
+        self._lbl_brightness, self._slider_brightness, self._lbl_br_val = (
             self._add_slider_row(lay, "lbl_brightness", 0, 200, 100)
+        )
 
         # Contrast
-        self._lbl_contrast, self._slider_contrast, self._lbl_co_val = \
+        self._lbl_contrast, self._slider_contrast, self._lbl_co_val = (
             self._add_slider_row(lay, "lbl_contrast", 0, 200, 100)
+        )
 
         # Sharpness
-        self._lbl_sharpness, self._slider_sharpness, self._lbl_sh_val = \
+        self._lbl_sharpness, self._slider_sharpness, self._lbl_sh_val = (
             self._add_slider_row(lay, "lbl_sharpness", 0, 200, 100)
+        )
 
         # Zoom Speed
-        self._lbl_zoom, self._slider_zoom, self._lbl_zm_val = \
-            self._add_slider_row(lay, "lbl_zoom_step", 10, 500, 100)
+        self._lbl_zoom, self._slider_zoom, self._lbl_zm_val = self._add_slider_row(
+            lay, "lbl_zoom_step", 10, 500, 100
+        )
 
         self._btn_reset = QPushButton()
         lay.addWidget(self._btn_reset)
@@ -398,9 +432,11 @@ class PhotoTemplateStudioPro(QMainWindow):
         lay.addWidget(self._lbl_export)
 
         self._combo_preset = QComboBox()
-        presets = ["Original Size"] + [
-            f"{k} ({v[0]}×{v[1]})" for k, v in INSTAGRAM_PRESETS.items()
-        ] + ["Custom"]
+        presets = (
+            ["Original Size"]
+            + [f"{k} ({v[0]}×{v[1]})" for k, v in INSTAGRAM_PRESETS.items()]
+            + ["Custom"]
+        )
         self._combo_preset.addItems(presets)
         lay.addWidget(self._combo_preset)
 
@@ -408,10 +444,16 @@ class PhotoTemplateStudioPro(QMainWindow):
         self._wgt_custom = QWidget()
         cl = QHBoxLayout(self._wgt_custom)
         cl.setContentsMargins(0, 4, 0, 0)
-        self._spin_w = QSpinBox(); self._spin_w.setRange(1, 10000); self._spin_w.setValue(1080)
-        self._spin_h = QSpinBox(); self._spin_h.setRange(1, 10000); self._spin_h.setValue(1080)
-        cl.addWidget(QLabel("W:")); cl.addWidget(self._spin_w)
-        cl.addWidget(QLabel("H:")); cl.addWidget(self._spin_h)
+        self._spin_w = QSpinBox()
+        self._spin_w.setRange(1, 10000)
+        self._spin_w.setValue(1080)
+        self._spin_h = QSpinBox()
+        self._spin_h.setRange(1, 10000)
+        self._spin_h.setValue(1080)
+        cl.addWidget(QLabel("W:"))
+        cl.addWidget(self._spin_w)
+        cl.addWidget(QLabel("H:"))
+        cl.addWidget(self._spin_h)
         self._wgt_custom.setVisible(False)
         lay.addWidget(self._wgt_custom)
 
@@ -712,7 +754,9 @@ class PhotoTemplateStudioPro(QMainWindow):
             self._update_status()
 
     def _on_add_template(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Add Template", "", "PNG Images (*.png)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add Template", "", "PNG Images (*.png)"
+        )
         if not path:
             return
         name = os.path.splitext(os.path.basename(path))[0]
@@ -736,7 +780,9 @@ class PhotoTemplateStudioPro(QMainWindow):
 
             tname = self._combo_template.currentText()
             tsize = self._template_manager.get_template_size(tname)
-            proxy = self._image_processor.get_proxy(self._brightness, self._contrast, self._sharpness)
+            proxy = self._image_processor.get_proxy(
+                self._brightness, self._contrast, self._sharpness
+            )
             msize = self._image_processor.get_master_size()
 
             self._canvas_engine.set_photo(proxy, msize, tsize)
@@ -747,7 +793,11 @@ class PhotoTemplateStudioPro(QMainWindow):
             QMessageBox.critical(self, tr("msg_error"), str(e))
 
     def _on_tool_changed(self, button):
-        tools = {self._btn_move: "move", self._btn_draw: "draw", self._btn_text_tool: "text"}
+        tools = {
+            self._btn_move: "move",
+            self._btn_draw: "draw",
+            self._btn_text_tool: "text",
+        }
         self._canvas_engine.set_tool(tools.get(button, "move"))
 
     def _on_layer_changed(self, index):
@@ -825,8 +875,7 @@ class PhotoTemplateStudioPro(QMainWindow):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, tr("btn_save_image"), "",
-            "JPEG (*.jpg);;PNG (*.png);;HEIC (*.heic)"
+            self, tr("btn_save_image"), "", "JPEG (*.jpg);;PNG (*.png);;HEIC (*.heic)"
         )
         if not path:
             return
@@ -836,16 +885,20 @@ class PhotoTemplateStudioPro(QMainWindow):
         try:
             self._export_pipeline.export_single(
                 photo_master=self._image_processor.get_master(),
-                template_image=timg, mode=mode,
+                template_image=timg,
+                mode=mode,
                 photo_scale=self._canvas_engine.photo_scale,
                 photo_offset_x=self._canvas_engine.photo_offset_x,
                 photo_offset_y=self._canvas_engine.photo_offset_y,
                 template_scale=self._canvas_engine.template_scale,
                 template_offset_x=self._canvas_engine.template_offset_x,
                 template_offset_y=self._canvas_engine.template_offset_y,
-                brightness=self._brightness, contrast=self._contrast,
+                brightness=self._brightness,
+                contrast=self._contrast,
                 sharpness=self._sharpness,
-                target_w=tw, target_h=th, save_path=path,
+                target_w=tw,
+                target_h=th,
+                save_path=path,
                 use_ai_upscale=self._chk_ai.isChecked(),
             )
             QMessageBox.information(self, tr("msg_success"), tr("msg_done"))
@@ -875,16 +928,21 @@ class PhotoTemplateStudioPro(QMainWindow):
 
         try:
             n = self._export_pipeline.batch_process(
-                input_dir=in_dir, output_dir=out_dir, template_image=timg,
+                input_dir=in_dir,
+                output_dir=out_dir,
+                template_image=timg,
                 template_scale=self._canvas_engine.template_scale,
                 template_offset_x=self._canvas_engine.template_offset_x,
                 template_offset_y=self._canvas_engine.template_offset_y,
-                brightness=self._brightness, contrast=self._contrast,
+                brightness=self._brightness,
+                contrast=self._contrast,
                 sharpness=self._sharpness,
                 use_ai_upscale=self._chk_ai.isChecked(),
                 progress_callback=prog,
             )
-            QMessageBox.information(self, tr("msg_success"), tr("msg_batch_complete", count=n))
+            QMessageBox.information(
+                self, tr("msg_success"), tr("msg_batch_complete", count=n)
+            )
         except Exception as e:
             QMessageBox.critical(self, tr("msg_error"), str(e))
         self._lbl_status.setText("Ready")
@@ -937,7 +995,9 @@ class PhotoTemplateStudioPro(QMainWindow):
         self._txt_output.clear()
 
         self._text_worker = _TextWorker(
-            mtype, model, i18n.get_language(),
+            mtype,
+            model,
+            i18n.get_language(),
             self._combo_tone.currentText(),
             raw,
             self._combo_length.currentText(),
@@ -975,7 +1035,9 @@ class PhotoTemplateStudioPro(QMainWindow):
         """Push an updated proxy image to the canvas after adjustment changes."""
         if not self._image_processor.has_master():
             return
-        proxy = self._image_processor.get_proxy(self._brightness, self._contrast, self._sharpness)
+        proxy = self._image_processor.get_proxy(
+            self._brightness, self._contrast, self._sharpness
+        )
         if proxy:
             self._canvas_engine.update_photo_proxy(proxy)
 
@@ -985,6 +1047,7 @@ class PhotoTemplateStudioPro(QMainWindow):
         if ext == ".svg":
             try:
                 import cairosvg
+
                 data = cairosvg.svg2png(url=path)
                 return Image.open(io.BytesIO(data)).convert("RGBA")
             except ImportError:
@@ -992,6 +1055,7 @@ class PhotoTemplateStudioPro(QMainWindow):
         if ext == ".pdf":
             try:
                 import fitz
+
                 doc = fitz.open(path)
                 pix = doc[0].get_pixmap(dpi=300)
                 img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -1014,6 +1078,7 @@ class PhotoTemplateStudioPro(QMainWindow):
         if prov == "Ollama":
             try:
                 from app.text_engine import TextEngine
+
                 models = TextEngine.get_ollama_models()
                 self._combo_model.addItems(models if models else ["No models found"])
             except Exception:
@@ -1021,6 +1086,7 @@ class PhotoTemplateStudioPro(QMainWindow):
         else:
             try:
                 from app.text_engine import TextEngine
+
                 self._combo_model.addItems(TextEngine.PAID_MODELS)
             except Exception:
                 self._combo_model.addItems(["gpt-4o", "gemini-1.5-pro"])
@@ -1031,6 +1097,7 @@ class PhotoTemplateStudioPro(QMainWindow):
             return
         try:
             import torch  # noqa: F401
+
             self._lbl_ai_status.setText(tr("msg_torch_fallback"))
         except ImportError:
             self._lbl_ai_status.setText(tr("msg_cpu_fallback"))

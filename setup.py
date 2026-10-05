@@ -1,6 +1,4 @@
-import subprocess
-import sys
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 # Optional: Run the custom install script for PyTorch if needed
 # subprocess.check_call([sys.executable, "app/install.py"])
@@ -15,11 +13,7 @@ setup(
         "numpy>=1.24.0",
         "PyMuPDF>=1.23.0",
         "pillow-heif>=0.13.0",
-        "cairosvg>=2.7.0"
+        "cairosvg>=2.7.0",
     ],
-    entry_points={
-        "console_scripts": [
-            "photo-studio=main:main"
-        ]
-    }
+    entry_points={"console_scripts": ["photo-studio=main:main"]},
 )

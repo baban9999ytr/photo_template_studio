@@ -1,13 +1,17 @@
 # Privacy & Local Processing Guarantee
 
 ## 100% Offline Local Processing
-We prioritize your privacy and data security. All core photo processing tasks, including image scaling, framing, drawing, annotations, and AI image upscaling, happen **entirely offline** on your local hardware. 
+
+We prioritize your privacy and data security. All core photo processing tasks, including image scaling, framing, drawing, annotations, and AI image upscaling, happen **entirely offline** on your local hardware.
+
 - No images, templates, or project metadata are ever uploaded to the cloud or sent to remote servers.
 - We do not collect telemetry, usage metrics, or any tracking data.
 - If you use **Ollama** for text polishing, all LLM inference occurs securely and privately on your local CPU/GPU.
 
 ## Paid Cloud API Privacy
+
 When you choose to utilize paid cloud models (e.g., OpenAI ChatGPT, Google Gemini) via the Text Studio:
+
 - Text payloads (your rough input text and our system prompt) are transmitted securely and directly between your local machine and the official API endpoints of the respective providers.
 - These requests are authenticated using your personal API keys, which are stored securely and locally on your machine in the `.env` file. We never have access to your API keys.
 - We recommend reviewing the respective privacy policies of OpenAI and Google regarding data retention for API calls.

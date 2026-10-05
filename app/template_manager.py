@@ -1,7 +1,9 @@
-import os
 import json
+import os
+
 from PIL import Image
-from app.constants import resolve_template_path, get_app_base_dir
+
+from app.constants import get_app_base_dir, resolve_template_path
 
 
 class TemplateManager:

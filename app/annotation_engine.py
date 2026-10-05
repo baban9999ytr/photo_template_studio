@@ -1,9 +1,9 @@
-import os
-from PIL import ImageDraw, ImageFont
-from PySide6.QtGui import QPen, QColor, QFont
+from PIL import ImageFont
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QPen
 
 from app.constants import FONT_FALLBACK_CHAIN
+
 
 class AnnotationEngine:
     def __init__(self):
@@ -12,14 +12,10 @@ class AnnotationEngine:
         self._resolved_font_path = None
 
     def add_stroke(self, nx1, ny1, nx2, ny2, color, normalized_width):
-        self._strokes.append(
-            (nx1, ny1, nx2, ny2, color, normalized_width)
-        )
+        self._strokes.append((nx1, ny1, nx2, ny2, color, normalized_width))
 
     def add_text(self, nx, ny, text, color, normalized_size):
-        self._texts.append(
-            (nx, ny, text, color, normalized_size)
-        )
+        self._texts.append((nx, ny, text, color, normalized_size))
 
     def clear(self):
         self._strokes.clear()
@@ -43,7 +39,7 @@ class AnnotationEngine:
             x2 = offset_x + nx2 * view_w
             y2 = offset_y + ny2 * view_h
             w = max(1, int(nw * ref))
-            
+
             pen = QPen(QColor(color))
             pen.setWidth(w)
             pen.setCapStyle(Qt.RoundCap)
@@ -54,7 +50,7 @@ class AnnotationEngine:
             x = offset_x + nx * view_w
             y = offset_y + ny * view_h
             size = max(8, int(nsize * ref))
-            
+
             text_item = scene.addText(text)
             text_item.setDefaultTextColor(QColor(color))
             font = QFont("Arial", size, QFont.Bold)

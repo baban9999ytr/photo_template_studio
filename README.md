@@ -16,6 +16,7 @@ Developed by **Mustafa Göksal**
 ## Key Features
 
 ### Photo Studio (Image Engine)
+
 - **Interactive Framing:** Auto-fit or pan & zoom images perfectly into your custom templates.
 - **AI Upscaling:** Hardware-accelerated GPU/CPU upscaling using Real-ESRGAN and PyTorch. Fallbacks gracefully to high-quality Pillow LANCZOS.
 - **Batch Exporting:** Process entire directories of photos into templates in a single click.
@@ -23,6 +24,7 @@ Developed by **Mustafa Göksal**
 - **Image Adjustments:** Real-time brightness, contrast, and sharpness controls.
 
 ### Text Studio (AI Polisher)
+
 - **Bilingual Support:** Full UI and AI generation support for both **English (en)** and **Turkish (tr)**.
 - **Local Ollama Integration:** Utilize 100% offline local LLMs via Ollama to generate professional social media captions.
 - **Paid Cloud APIs:** Easily plug in your OpenAI (`gpt-4o`) or Google Gemini (`gemini-1.5-pro`) keys for top-tier generation.
@@ -33,6 +35,7 @@ Developed by **Mustafa Göksal**
 ## Architecture
 
 This project has been modularized for high performance and maintainability:
+
 - `app/application.py`: Main UI orchestration (**PySide6**) and event wiring.
 - `app/canvas_engine.py`: Dual-mode (pan/zoom & auto-fit) rendering engine.
 - `app/gpu_engine.py`: Hardware-accelerated (CUDA/MPS) AI upscaling with CPU fallbacks.
@@ -46,31 +49,39 @@ This project has been modularized for high performance and maintainability:
 ## Quick Start & Installation
 
 ### 1. Prerequisites
+
 Ensure you have Python 3.11+ installed. Clone the repository and install the requirements:
+
 ```bash
 git clone https://github.com/baban9999ytr/PictureFormatter.git
 cd PictureFormatter
 pip install -r requirements.txt
 ```
 
-*(Note: PyTorch and PySide6 are heavily utilized. Make sure to install the CUDA-specific PyTorch wheels if you have an NVIDIA GPU).*
+_(Note: PyTorch and PySide6 are heavily utilized. Make sure to install the CUDA-specific PyTorch wheels if you have an NVIDIA GPU)._
 
 ### 2. .env Configuration (For Paid Models)
+
 The Text Studio requires an `.env` file if you plan to use Paid APIs (OpenAI or Gemini).
 On first launch, the application will automatically create an empty `.env` file for you in the root directory.
 
 You can edit this file directly by clicking the **"⚙ Edit .env"** button in the app, or manually add your keys:
+
 ```env
 OPENAI_API_KEY=sk-your-openai-key-here
 GEMINI_API_KEY=AIza-your-gemini-key-here
 ```
-*(If you are exclusively using local Ollama models, you do not need API keys).*
+
+_(If you are exclusively using local Ollama models, you do not need API keys)._
 
 ### 3. Run the App
+
 ```bash
 python main.py
 ```
+
 Alternatively, if installed via setuptools, run:
+
 ```bash
 photo-studio
 ```
@@ -80,21 +91,25 @@ photo-studio
 ## Cross-Platform Executables
 
 You can easily build a standalone executable for your operating system using `PyInstaller`.
+
 ```bash
 pip install pyinstaller
 ```
 
 **Windows Build Command:**
+
 ```bash
 pyinstaller --noconfirm --onedir --windowed --add-data "app;app/" main.py --name PhotoTemplateStudioPro
 ```
 
 **macOS / Linux Build Command:**
+
 ```bash
 pyinstaller --noconfirm --onedir --windowed --add-data "app:app/" main.py --name PhotoTemplateStudioPro
 ```
 
 ### GitHub Actions
+
 This repository is configured with automated GitHub Actions.
 Pushing a version tag (e.g., `v2.0.0`) will automatically build `.exe` (Windows), `.app` (macOS), and `.tar.gz` (Linux) bundles and attach them to the GitHub Release.
 
@@ -104,6 +119,7 @@ Pushing a version tag (e.g., `v2.0.0`) will automatically build `.exe` (Windows)
 
 **100% Offline Local Processing Guarantee:**
 All core photo processing tasks, including image scaling, framing, drawing, and AI image upscaling, happen **entirely offline** on your local hardware.
+
 - No images or project metadata are ever uploaded to the cloud.
 - If you use **Ollama**, all text generation occurs securely on your local machine.
 

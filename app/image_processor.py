@@ -1,4 +1,5 @@
 from PIL import Image, ImageEnhance, ImageOps
+
 from app.constants import PROXY_MAX_DIM
 
 
@@ -75,9 +76,7 @@ class ImageProcessor:
         ratio = max_dim / max(w, h)
         new_w = max(1, int(w * ratio))
         new_h = max(1, int(h * ratio))
-        self._proxy_cache = adjusted.resize(
-            (new_w, new_h), Image.Resampling.LANCZOS
-        )
+        self._proxy_cache = adjusted.resize((new_w, new_h), Image.Resampling.LANCZOS)
         self._last_proxy_key = proxy_key
         return self._proxy_cache
 
